@@ -106,7 +106,7 @@ export default function Navbar() {
 
       {/* Mobile menu */}
       {mobileOpen && (
-        <div className="md:hidden border-t-2 border-primary-200 dark:border-primary-700 bg-white dark:bg-primary-900 px-4 py-4 space-y-3 animate-fade-in">
+        <div className="md:hidden border-t-2 border-primary-200 dark:border-primary-700 bg-white dark:bg-primary-900 px-4 py-4 space-y-3 animate-fade-in" data-testid="mobile-menu">
           {user ? (
             <>
               <div className="flex items-center gap-2 px-3 py-2 bg-primary-100 dark:bg-primary-800 rounded-clay text-sm font-semibold text-primary-700 dark:text-primary-300">
