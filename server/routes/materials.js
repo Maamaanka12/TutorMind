@@ -7,7 +7,19 @@ import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 
 const router = Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ['pdf', 'docx', 'pptx', 'txt'];
+    const ext = file.originalname.split('.').pop().toLowerCase();
+    if (allowed.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Unsupported file type ".${ext}". Please upload a PDF, DOCX, PPTX, or TXT file.`));
+    }
+  },
+});
 
 // Extract text from PPTX buffer using JSZip
 async function extractPptxText(buffer) {
@@ -72,7 +84,16 @@ router.post('/', authenticate, upload.single('file'), async (req, res) => {
     });
   } catch (err) {
     console.error('Upload error:', err);
-    res.status(500).json({ error: 'Server error' });
+    if (err.message && err.message.includes('Unsupported file type')) {
+      return res.status(400).json({ error: err.message });
+    }
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'File is too large. Maximum size is 10 MB.' });
+    }
+    if (err.message && (err.message.includes('Invalid') || err.message.includes('corrupt') || err.message.includes('password'))) {
+      return res.status(400).json({ error: 'Unable to read this file. It may be corrupted or password-protected. Please try a different file.' });
+    }
+    res.status(500).json({ error: 'Something went wrong while processing your file. Please try again.' });
   }
 });
 

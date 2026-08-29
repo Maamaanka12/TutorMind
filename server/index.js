@@ -23,6 +23,18 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Global error handler (catches multer and other middleware errors)
+app.use((err, _req, res, _next) => {
+  if (err.message && err.message.includes('Unsupported file type')) {
+    return res.status(400).json({ error: err.message });
+  }
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(400).json({ error: 'File is too large. Maximum size is 10 MB.' });
+  }
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Something went wrong. Please try again.' });
+});
+
 // Initialize database and start server
 async function start() {
   try {

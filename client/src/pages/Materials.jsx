@@ -32,12 +32,49 @@ export default function Materials() {
     }
   }
 
+  const ACCEPTED_TYPES = ['.pdf', '.txt', '.docx', '.pptx'];
+  const MAX_SIZE_MB = 10;
+
+  function validateFile(f) {
+    const ext = '.' + f.name.split('.').pop().toLowerCase();
+    if (!ACCEPTED_TYPES.includes(ext)) {
+      return `Unsupported file type "${ext}". Please upload a PDF, DOCX, PPTX, or TXT file.`;
+    }
+    if (f.size > MAX_SIZE_MB * 1024 * 1024) {
+      return `File is too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Maximum size is ${MAX_SIZE_MB} MB.`;
+    }
+    return null;
+  }
+
+  function handleFileChange(e) {
+    const f = e.target.files[0];
+    if (!f) return;
+    const err = validateFile(f);
+    if (err) {
+      setError(err);
+      setFile(null);
+      e.target.value = '';
+      return;
+    }
+    setError('');
+    setFile(f);
+  }
+
   async function handleUpload(e) {
     e.preventDefault();
     setError('');
     setUploading(true);
 
     try {
+      if (file) {
+        const err = validateFile(file);
+        if (err) {
+          setError(err);
+          setUploading(false);
+          return;
+        }
+      }
+
       const formData = new FormData();
       formData.append('title', title);
       if (file) {
@@ -146,7 +183,7 @@ export default function Materials() {
                 <input
                   type="file"
                   accept=".pdf,.txt,.docx,.pptx"
-                  onChange={(e) => setFile(e.target.files[0])}
+                  onChange={handleFileChange}
                   className="sr-only"
                 />
               </label>
