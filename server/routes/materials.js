@@ -1,22 +1,54 @@
 import { Router } from 'express';
 import multer from 'multer';
 import pdfParse from 'pdf-parse';
+import mammoth from 'mammoth';
+import JSZip from 'jszip';
 import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-// Upload material (text or PDF)
+// Extract text from PPTX buffer using JSZip
+async function extractPptxText(buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  const slideFiles = Object.keys(zip.files).filter(f => /^ppt\/slides\/slide\d+\.xml$/.test(f));
+  slideFiles.sort();
+  const texts = [];
+  for (const file of slideFiles) {
+    const xml = await zip.file(file).async('string');
+    const slideTexts = [];
+    const regex = /<a:t[^>]*>([^<]*)<\/a:t>/g;
+    let match;
+    while ((match = regex.exec(xml)) !== null) {
+      if (match[1].trim()) slideTexts.push(match[1].trim());
+    }
+    if (slideTexts.length > 0) texts.push(slideTexts.join(' '));
+  }
+  return texts.join('\n\n');
+}
+
+// Upload material (text, PDF, DOCX, PPTX, or TXT)
 router.post('/', authenticate, upload.single('file'), async (req, res) => {
   try {
     const { title, content } = req.body;
     let materialContent = content;
 
-    // If a PDF was uploaded
+    // If a file was uploaded
     if (req.file) {
-      const data = await pdfParse(req.file.buffer);
-      materialContent = data.text;
+      const ext = req.file.originalname.split('.').pop().toLowerCase();
+
+      if (ext === 'pdf') {
+        const data = await pdfParse(req.file.buffer);
+        materialContent = data.text;
+      } else if (ext === 'docx') {
+        const result = await mammoth.extractRawText({ buffer: req.file.buffer });
+        materialContent = result.value;
+      } else if (ext === 'pptx') {
+        materialContent = await extractPptxText(req.file.buffer);
+      } else if (ext === 'txt') {
+        materialContent = req.file.buffer.toString('utf-8');
+      }
     }
 
     if (!title || !materialContent) {

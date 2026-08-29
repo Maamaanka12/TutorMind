@@ -130,7 +130,7 @@ export default function Materials() {
 
           <div>
             <label className="block text-sm font-bold text-primary-700 dark:text-primary-300 mb-2">
-              Content <span className="text-primary-400 dark:text-primary-600 font-normal">(paste text or upload PDF)</span>
+              Content <span className="text-primary-400 dark:text-primary-600 font-normal">(paste text or upload file)</span>
             </label>
             <textarea
               value={content}
@@ -142,10 +142,10 @@ export default function Materials() {
             <div className="mt-3 flex items-center gap-3">
               <label className="clay-btn-outline text-sm py-2 px-4 inline-flex items-center gap-1.5">
                 <Upload size={14} />
-                {file ? file.name : 'Choose PDF'}
+                {file ? file.name : 'Choose File'}
                 <input
                   type="file"
-                  accept=".pdf"
+                  accept=".pdf,.txt,.docx,.pptx"
                   onChange={(e) => setFile(e.target.files[0])}
                   className="sr-only"
                 />
