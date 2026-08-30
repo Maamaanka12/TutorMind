@@ -10,6 +10,7 @@ import Assessment from './pages/Assessment';
 import LearningSession from './pages/LearningSession';
 import Flashcards from './pages/Flashcards';
 import ExamMode from './pages/ExamMode';
+import LearningTwin from './pages/LearningTwin';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -41,6 +42,7 @@ export default function App() {
             <Route path="/learn/:materialId" element={<ProtectedRoute><LearningSession /></ProtectedRoute>} />
             <Route path="/flashcards" element={<ProtectedRoute><Flashcards /></ProtectedRoute>} />
             <Route path="/exam" element={<ProtectedRoute><ExamMode /></ProtectedRoute>} />
+            <Route path="/learning-twin" element={<ProtectedRoute><LearningTwin /></ProtectedRoute>} />
           </Routes>
         </main>
       </div>

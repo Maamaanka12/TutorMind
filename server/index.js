@@ -7,6 +7,7 @@ import materialsRoutes from './routes/materials.js';
 import aiRoutes from './routes/ai.js';
 import flashcardsRoutes from './routes/flashcards.js';
 import examsRoutes from './routes/exams.js';
+import learningTwinRoutes from './routes/learningTwin.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -21,6 +22,7 @@ app.use('/api/materials', materialsRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/flashcards', flashcardsRoutes);
 app.use('/api/exams', examsRoutes);
+app.use('/api/learning-twin', learningTwinRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

@@ -49,6 +49,7 @@ export const api = {
   evaluate: (questionId, selectedAnswer) => request('/ai/evaluate', { method: 'POST', body: JSON.stringify({ questionId, selectedAnswer }) }),
   getProfile: () => request('/ai/profile'),
   getMisconceptions: () => request('/ai/misconceptions'),
+  getLearningContext: () => request('/ai/learning-context'),
 
   // Flashcards
   generateFlashcards: (body) => request('/flashcards/generate', { method: 'POST', body: JSON.stringify(body) }),
@@ -68,4 +69,12 @@ export const api = {
   answerExamQuestion: (examId, body) => request(`/exams/${examId}/answer`, { method: 'POST', body: JSON.stringify(body) }),
   submitExam: (examId) => request(`/exams/${examId}/submit`, { method: 'POST' }),
   getExamHistory: () => request('/exams'),
+
+  // Learning Twin
+  getLearningTwin: () => request('/learning-twin'),
+  getLearningTwinContext: () => request('/learning-twin/context'),
+  getLearningRecommendations: () => request('/learning-twin/recommendations'),
+  recordMisconception: (body) => request('/learning-twin/misconceptions', { method: 'POST', body: JSON.stringify(body) }),
+  resolveMisconception: (id) => request(`/learning-twin/misconceptions/${id}/resolve`, { method: 'PUT' }),
+  detectPatterns: () => request('/learning-twin/detect-patterns', { method: 'POST' }),
 };

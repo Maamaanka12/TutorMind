@@ -3,7 +3,7 @@ import { getPool, sql } from './db.js';
 async function verifyDatabase() {
   const pool = await getPool();
 
-  const tables = ['Students', 'Materials', 'Concepts', 'Questions', 'Answers', 'KnowledgeProfile', 'LearningSessions', 'Flashcards', 'FlashcardProgress', 'Exams', 'ExamQuestions', 'ExamAnswers'];
+  const tables = ['Students', 'Materials', 'Concepts', 'Questions', 'Answers', 'KnowledgeProfile', 'LearningSessions', 'Flashcards', 'FlashcardProgress', 'Exams', 'ExamQuestions', 'ExamAnswers', 'StudentMisconceptions', 'LearningPatterns'];
 
   for (const table of tables) {
     const result = await pool.request()

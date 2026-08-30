@@ -1,0 +1,420 @@
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { api } from '../utils/api';
+import { useTheme } from '../utils/ThemeContext';
+import {
+  Brain, Target, TrendingUp, AlertTriangle, CheckCircle2, Lightbulb,
+  Layers, BookOpen, BarChart3, Zap, ArrowRight, RefreshCw, Loader2,
+  ChevronRight, Activity, Eye, Sparkles, Clock, XCircle
+} from 'lucide-react';
+
+export default function LearningTwin() {
+  const { dark } = useTheme();
+  const navigate = useNavigate();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [detecting, setDetecting] = useState(false);
+  const [activeTab, setActiveTab] = useState('overview');
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const result = await api.getLearningTwin();
+      setData(result);
+    } catch (err) {
+      console.error('Failed to load learning twin:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDetectPatterns = async () => {
+    setDetecting(true);
+    try {
+      await api.detectPatterns();
+      await loadData(); // Reload with new patterns
+    } catch (err) {
+      console.error('Pattern detection failed:', err);
+    } finally {
+      setDetecting(false);
+    }
+  };
+
+  const handleResolveMisconception = async (id) => {
+    try {
+      await api.resolveMisconception(id);
+      await loadData();
+    } catch (err) {
+      console.error('Failed to resolve:', err);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="w-10 h-10 border-4 border-primary-200 dark:border-primary-700 border-t-primary-500 dark:border-t-primary-400 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="max-w-4xl mx-auto px-4 py-8 text-center">
+        <Brain size={48} className="mx-auto text-primary-300 dark:text-primary-600 mb-4" />
+        <h2 className="font-display font-bold text-xl text-primary-900 dark:text-primary-100 mb-2">No Learning Data Yet</h2>
+        <p className="text-primary-500 dark:text-primary-400">Start studying to build your Learning Twin!</p>
+      </div>
+    );
+  }
+
+  const masteryColor = (pct) => {
+    if (pct >= 80) return 'text-green-600 dark:text-green-400';
+    if (pct >= 60) return 'text-blue-600 dark:text-blue-400';
+    if (pct >= 40) return 'text-yellow-600 dark:text-yellow-400';
+    return 'text-red-600 dark:text-red-400';
+  };
+
+  const masteryBarColor = (pct) => {
+    if (pct >= 80) return 'bg-green-500';
+    if (pct >= 60) return 'bg-blue-500';
+    if (pct >= 40) return 'bg-yellow-500';
+    return 'bg-red-500';
+  };
+
+  const masteryBg = (pct) => {
+    if (pct >= 80) return 'bg-green-100 dark:bg-green-900/30 border-green-300 dark:border-green-700';
+    if (pct >= 60) return 'bg-blue-100 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700';
+    if (pct >= 40) return 'bg-yellow-100 dark:bg-yellow-900/30 border-yellow-300 dark:border-yellow-700';
+    return 'bg-red-100 dark:bg-red-900/30 border-red-300 dark:border-red-700';
+  };
+
+  return (
+    <div className="max-w-5xl mx-auto px-4 py-8">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-8 flex-wrap gap-3">
+        <div className="flex items-center gap-3">
+          <div className="bg-purple-500 text-white p-3 rounded-clay" style={{ boxShadow: dark ? '3px 3px 0 0 #581C87' : '3px 3px 0 0 #C4B5FD' }}>
+            <Brain size={24} />
+          </div>
+          <div>
+            <h1 className="text-2xl font-display font-bold text-primary-900 dark:text-primary-100">Learning Twin</h1>
+            <p className="text-primary-500 dark:text-primary-400 text-sm">Your personalized learning model</p>
+          </div>
+        </div>
+        <button
+          onClick={handleDetectPatterns}
+          disabled={detecting}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-clay border-2 border-primary-200 dark:border-primary-700 text-primary-600 dark:text-primary-400 font-semibold hover:bg-primary-50 dark:hover:bg-primary-800 transition-colors text-sm disabled:opacity-50"
+        >
+          {detecting ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+          Detect Patterns
+        </button>
+      </div>
+
+      {/* Overall Mastery Card */}
+      <div className={`rounded-clay p-6 border-2 mb-6 ${masteryBg(data.overallMastery)}`} style={{ boxShadow: dark ? '4px 4px 0 0 #1E1B4B' : '4px 4px 0 0 #C7D2FE' }}>
+        <div className="flex items-center justify-between flex-wrap gap-4">
+          <div>
+            <p className="text-sm font-semibold text-primary-600 dark:text-primary-400 mb-1">Overall Mastery</p>
+            <div className={`text-5xl font-display font-bold ${masteryColor(data.overallMastery)}`}>
+              {data.overallMastery}%
+            </div>
+            <p className="text-sm text-primary-500 dark:text-primary-400 mt-1">
+              {data.topicMastery.length} topic{data.topicMastery.length !== 1 ? 's' : ''} tracked
+            </p>
+          </div>
+          <div className="flex gap-6 text-center">
+            <div>
+              <div className="text-2xl font-display font-bold text-green-600 dark:text-green-400">{data.strongTopics.length}</div>
+              <div className="text-xs text-primary-500 dark:text-primary-400 font-semibold">Strong</div>
+            </div>
+            <div>
+              <div className="text-2xl font-display font-bold text-yellow-600 dark:text-yellow-400">{data.reviewTopics.length}</div>
+              <div className="text-xs text-primary-500 dark:text-primary-400 font-semibold">Review</div>
+            </div>
+            <div>
+              <div className="text-2xl font-display font-bold text-red-600 dark:text-red-400">{data.weakTopics.length}</div>
+              <div className="text-xs text-primary-500 dark:text-primary-400 font-semibold">Weak</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-2 mb-6 overflow-x-auto pb-2">
+        {[
+          { id: 'overview', label: 'Overview', icon: BarChart3 },
+          { id: 'misconceptions', label: 'Misconceptions', icon: AlertTriangle },
+          { id: 'patterns', label: 'Patterns', icon: Activity },
+          { id: 'actions', label: 'Actions', icon: Target },
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-clay font-semibold text-sm whitespace-nowrap transition-all duration-150 ${
+              activeTab === tab.id
+                ? 'bg-primary-500 text-white'
+                : 'bg-white dark:bg-primary-900 border-2 border-primary-200 dark:border-primary-700 text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-800'
+            }`}
+          >
+            <tab.icon size={14} />
+            {tab.label}
+            {tab.id === 'misconceptions' && data.misconceptions.length > 0 && (
+              <span className="ml-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">{data.misconceptions.length}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab Content */}
+      {activeTab === 'overview' && (
+        <div className="grid md:grid-cols-2 gap-6">
+          {/* Stats Row */}
+          <div className="md:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-4">
+            <MiniStat icon={Layers} label="Flashcards" value={data.flashcardStats.total} sub={`${data.flashcardStats.mastered} mastered`} color="primary" />
+            <MiniStat icon={Target} label="Card Accuracy" value={`${data.flashcardStats.accuracy}%`} sub={`${data.flashcardStats.due} due`} color="green" />
+            <MiniStat icon={BookOpen} label="Exams Taken" value={data.examStats.total} sub={`Avg: ${data.examStats.avgScore}%`} color="purple" />
+            <MiniStat icon={TrendingUp} label="Best Score" value={`${data.examStats.bestScore}%`} sub={data.examStats.lastExam ? 'Has exams' : 'No exams yet'} color="blue" />
+          </div>
+
+          {/* Topic Mastery */}
+          <div className="bg-white dark:bg-primary-900 rounded-clay p-5 border-2 border-primary-200 dark:border-primary-700" style={{ boxShadow: dark ? '4px 4px 0 0 #312E81' : '4px 4px 0 0 #C7D2FE' }}>
+            <h3 className="font-display font-bold text-primary-900 dark:text-primary-100 mb-4 flex items-center gap-2">
+              <BarChart3 size={18} className="text-primary-500" /> Topic Mastery
+            </h3>
+            {data.topicMastery.length === 0 ? (
+              <p className="text-primary-400 dark:text-primary-500 text-sm text-center py-6">No topics tracked yet</p>
+            ) : (
+              <div className="space-y-3 max-h-80 overflow-y-auto">
+                {data.topicMastery.map((topic, i) => (
+                  <div key={i}>
+                    <div className="flex justify-between text-sm mb-1">
+                      <span className="font-semibold text-primary-800 dark:text-primary-200 truncate max-w-[200px]">{topic.name}</span>
+                      <span className={`font-bold ${masteryColor(topic.mastery)}`}>{topic.mastery}%</span>
+                    </div>
+                    <div className="h-2.5 bg-primary-200 dark:bg-primary-700 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full transition-all duration-500 ${masteryBarColor(topic.mastery)}`} style={{ width: `${topic.mastery}%` }} />
+                    </div>
+                    {topic.hasMisconception && (
+                      <p className="text-xs text-red-500 dark:text-red-400 mt-0.5 flex items-center gap-1">
+                        <AlertTriangle size={10} /> Has recorded misconception
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Recent Activity */}
+          <div className="bg-white dark:bg-primary-900 rounded-clay p-5 border-2 border-primary-200 dark:border-primary-700" style={{ boxShadow: dark ? '4px 4px 0 0 #312E81' : '4px 4px 0 0 #C7D2FE' }}>
+            <h3 className="font-display font-bold text-primary-900 dark:text-primary-100 mb-4 flex items-center gap-2">
+              <Clock size={18} className="text-primary-500" /> Recent Activity
+            </h3>
+            {data.recentActivity.length === 0 ? (
+              <p className="text-primary-400 dark:text-primary-500 text-sm text-center py-6">No activity yet</p>
+            ) : (
+              <div className="space-y-2 max-h-80 overflow-y-auto">
+                {data.recentActivity.map((activity, i) => (
+                  <div key={i} className={`flex items-start gap-2 p-2 rounded-clay-sm ${activity.is_correct ? 'bg-green-50 dark:bg-green-900/20' : 'bg-red-50 dark:bg-red-900/20'}`}>
+                    {activity.is_correct ? (
+                      <CheckCircle2 size={14} className="text-green-500 mt-0.5 flex-shrink-0" />
+                    ) : (
+                      <XCircle size={14} className="text-red-500 mt-0.5 flex-shrink-0" />
+                    )}
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-primary-700 dark:text-primary-300 truncate">{activity.concept_name}</p>
+                      <p className="text-xs text-primary-400 dark:text-primary-500 truncate">{activity.question_text}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'misconceptions' && (
+        <div className="space-y-4">
+          {data.misconceptions.length === 0 ? (
+            <div className="bg-white dark:bg-primary-900 rounded-clay p-8 border-2 border-primary-200 dark:border-primary-700 text-center">
+              <CheckCircle2 size={40} className="mx-auto text-green-500 mb-3" />
+              <h3 className="font-display font-bold text-primary-900 dark:text-primary-100 mb-1">No Active Misconceptions</h3>
+              <p className="text-primary-500 dark:text-primary-400 text-sm">Great job! No misconceptions have been recorded.</p>
+            </div>
+          ) : (
+            data.misconceptions.map((m, i) => (
+              <div key={m.id || i} className="bg-white dark:bg-primary-900 rounded-clay p-5 border-2 border-primary-200 dark:border-primary-700 border-l-4 border-l-yellow-400">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                        m.severity === 'high' ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400' :
+                        m.severity === 'medium' ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-400' :
+                        'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                      }`}>
+                        {m.severity}
+                      </span>
+                      <span className="text-xs text-primary-400 dark:text-primary-500">{m.occurrences}x detected</span>
+                    </div>
+                    <h4 className="font-semibold text-primary-800 dark:text-primary-200 mb-1">{m.topic}</h4>
+                    <p className="text-sm text-primary-600 dark:text-primary-400 leading-relaxed">{m.misconception}</p>
+                  </div>
+                  <button
+                    onClick={() => handleResolveMisconception(m.id)}
+                    className="ml-3 px-3 py-1.5 rounded-clay text-xs font-semibold bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400 hover:bg-green-200 dark:hover:bg-green-900/50 transition-colors flex items-center gap-1 flex-shrink-0"
+                  >
+                    <CheckCircle2 size={12} /> Resolve
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+
+          {data.resolvedMisconceptions.length > 0 && (
+            <div className="mt-6">
+              <h3 className="font-display font-bold text-primary-700 dark:text-primary-300 text-sm mb-3">Resolved ({data.resolvedMisconceptions.length})</h3>
+              {data.resolvedMisconceptions.slice(0, 5).map((m, i) => (
+                <div key={m.id || i} className="bg-primary-50 dark:bg-primary-800/50 rounded-clay p-3 mb-2 opacity-60">
+                  <p className="text-xs font-semibold text-primary-600 dark:text-primary-400">{m.topic}</p>
+                  <p className="text-xs text-primary-400 dark:text-primary-500 line-through">{m.misconception}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'patterns' && (
+        <div className="space-y-4">
+          {data.patterns.length === 0 ? (
+            <div className="bg-white dark:bg-primary-900 rounded-clay p-8 border-2 border-primary-200 dark:border-primary-700 text-center">
+              <Activity size={40} className="mx-auto text-primary-300 dark:text-primary-600 mb-3" />
+              <h3 className="font-display font-bold text-primary-900 dark:text-primary-100 mb-1">No Patterns Detected</h3>
+              <p className="text-primary-500 dark:text-primary-400 text-sm mb-4">Study more and then click "Detect Patterns" to analyze your learning behavior.</p>
+              <button
+                onClick={handleDetectPatterns}
+                disabled={detecting}
+                className="px-4 py-2 rounded-clay bg-primary-500 text-white font-semibold text-sm hover:bg-primary-600 transition-colors disabled:opacity-50"
+              >
+                {detecting ? 'Analyzing...' : 'Detect Patterns Now'}
+              </button>
+            </div>
+          ) : (
+            data.patterns.map((p, i) => (
+              <div key={p.id || i} className="bg-white dark:bg-primary-900 rounded-clay p-5 border-2 border-primary-200 dark:border-primary-700">
+                <div className="flex items-start gap-3">
+                  <div className={`p-2 rounded-clay flex-shrink-0 ${
+                    p.pattern_type === 'performance' ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400' :
+                    p.pattern_type === 'error_pattern' ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400' :
+                    p.pattern_type === 'difficulty' ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-400' :
+                    'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                  }`}>
+                    <Eye size={16} />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-primary-100 dark:bg-primary-800 text-primary-600 dark:text-primary-400">
+                        {p.pattern_type}
+                      </span>
+                      <span className="text-xs text-primary-400">{Math.round(p.confidence * 100)}% confidence</span>
+                    </div>
+                    <p className="text-sm text-primary-800 dark:text-primary-200 leading-relaxed">{p.pattern_text}</p>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {activeTab === 'actions' && (
+        <div className="space-y-4">
+          {data.recommendations.length === 0 ? (
+            <div className="bg-white dark:bg-primary-900 rounded-clay p-8 border-2 border-primary-200 dark:border-primary-700 text-center">
+              <Sparkles size={40} className="mx-auto text-green-500 mb-3" />
+              <h3 className="font-display font-bold text-primary-900 dark:text-primary-100 mb-1">All Caught Up!</h3>
+              <p className="text-primary-500 dark:text-primary-400 text-sm">No urgent recommendations right now. Keep up the good work!</p>
+            </div>
+          ) : (
+            data.recommendations.map((rec, i) => (
+              <div key={i} className={`bg-white dark:bg-primary-900 rounded-clay p-5 border-2 border-primary-200 dark:border-primary-700 border-l-4 ${
+                rec.priority === 'high' ? 'border-l-red-400' : rec.priority === 'medium' ? 'border-l-yellow-400' : 'border-l-green-400'
+              }`}>
+                <div className="flex items-start gap-3">
+                  <div className={`p-2 rounded-clay flex-shrink-0 ${
+                    rec.icon === 'alert' ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400' :
+                    rec.icon === 'warning' ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-400' :
+                    rec.icon === 'cards' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' :
+                    rec.icon === 'exam' ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400' :
+                    'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
+                  }`}>
+                    {rec.icon === 'alert' ? <AlertTriangle size={16} /> :
+                     rec.icon === 'cards' ? <Layers size={16} /> :
+                     rec.icon === 'exam' ? <BookOpen size={16} /> :
+                     rec.icon === 'trending' ? <TrendingUp size={16} /> :
+                     <Lightbulb size={16} />}
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-primary-800 dark:text-primary-200">{rec.text}</h4>
+                    <p className="text-sm text-primary-500 dark:text-primary-400 mt-0.5">{rec.detail}</p>
+                  </div>
+                  <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                    rec.priority === 'high' ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400' :
+                    'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-400'
+                  }`}>
+                    {rec.priority}
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
+
+          {/* Quick Actions */}
+          <div className="grid grid-cols-2 gap-3 mt-6">
+            <button
+              onClick={() => navigate('/flashcards')}
+              className="p-4 rounded-clay border-2 border-primary-200 dark:border-primary-700 bg-white dark:bg-primary-900 hover:bg-primary-50 dark:hover:bg-primary-800 transition-colors text-left"
+            >
+              <Layers size={20} className="text-primary-500 mb-2" />
+              <p className="font-semibold text-primary-800 dark:text-primary-200 text-sm">Flashcards</p>
+              <p className="text-xs text-primary-400">Practice with spaced repetition</p>
+            </button>
+            <button
+              onClick={() => navigate('/exam')}
+              className="p-4 rounded-clay border-2 border-primary-200 dark:border-primary-700 bg-white dark:bg-primary-900 hover:bg-primary-50 dark:hover:bg-primary-800 transition-colors text-left"
+            >
+              <BookOpen size={20} className="text-purple-500 mb-2" />
+              <p className="font-semibold text-primary-800 dark:text-primary-200 text-sm">Exam Mode</p>
+              <p className="text-xs text-primary-400">Take a focused assessment</p>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MiniStat({ icon: Icon, label, value, sub, color }) {
+  const colors = {
+    primary: 'bg-primary-100 dark:bg-primary-800 text-primary-600 dark:text-primary-400',
+    green: 'bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400',
+    purple: 'bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400',
+    blue: 'bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400',
+  };
+
+  return (
+    <div className="bg-white dark:bg-primary-900 rounded-clay p-4 border-2 border-primary-200 dark:border-primary-700">
+      <div className={`inline-flex p-1.5 rounded-clay ${colors[color]} mb-2`}>
+        <Icon size={14} />
+      </div>
+      <p className="text-xl font-display font-bold text-primary-900 dark:text-primary-100">{value}</p>
+      <p className="text-xs text-primary-500 dark:text-primary-400 font-semibold">{label}</p>
+      {sub && <p className="text-xs text-primary-400 dark:text-primary-500 mt-0.5">{sub}</p>}
+    </div>
+  );
+}

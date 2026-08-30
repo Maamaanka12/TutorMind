@@ -7,6 +7,51 @@ import 'dotenv/config';
 const router = Router();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+// Helper: Get Learning Twin context for AI adaptation
+async function getLearningTwinContext(pool, studentId) {
+  const masteryResult = await pool.request()
+    .input('studentId', sql.Int, studentId)
+    .query(`
+      SELECT c.name, kp.mastery_level, kp.misconceptions
+      FROM KnowledgeProfile kp
+      JOIN Concepts c ON kp.concept_id = c.id
+      WHERE kp.student_id = @studentId
+    `);
+
+  const misconceptionsResult = await pool.request()
+    .input('studentId', sql.Int, studentId)
+    .query(`
+      SELECT topic, misconception, severity
+      FROM StudentMisconceptions
+      WHERE student_id = @studentId AND resolved = 0
+    `);
+
+  const patternsResult = await pool.request()
+    .input('studentId', sql.Int, studentId)
+    .query(`
+      SELECT pattern_text
+      FROM LearningPatterns
+      WHERE student_id = @studentId AND active = 1
+    `);
+
+  const topics = masteryResult.recordset.map(t =>
+    `${t.name}: ${Math.round(t.mastery_level * 100)}%${t.misconceptions ? ' (has misconceptions)' : ''}`
+  ).join(', ');
+
+  const misconceptions = misconceptionsResult.recordset.map(m =>
+    `${m.topic}: ${m.misconception} (severity: ${m.severity})`
+  ).join('; ');
+
+  const patterns = patternsResult.recordset.map(p => p.pattern_text).join('; ');
+
+  return `Student learning profile:\n` +
+    `Topics: ${topics || 'No topics studied yet'}.\n` +
+    `Active misconceptions: ${misconceptions || 'None'}.\n` +
+    `Learning patterns: ${patterns || 'Not yet detected'}.\n` +
+    `\nAdapt your teaching based on this profile. If mastery is high, skip basics. ` +
+    `If misconceptions exist, address them. If patterns suggest example-based learning, use examples.`;
+}
+
 // Analyze material and extract concepts
 router.post('/analyze', authenticate, async (req, res) => {
   try {
@@ -197,6 +242,38 @@ Return JSON with: "misconception" (what the student likely misunderstood),
           ELSE
             INSERT INTO KnowledgeProfile (student_id, concept_id, mastery_level, misconceptions) 
             VALUES (@studentId, @conceptId, 0.3, @misconception)`);
+
+        // Record misconception in StudentMisconceptions table
+        const conceptNameResult = await pool.request()
+          .input('conceptId', sql.Int, question.concept_id)
+          .query('SELECT name FROM Concepts WHERE id = @conceptId');
+        const conceptName = conceptNameResult.recordset.length > 0 ? conceptNameResult.recordset[0].name : 'Unknown';
+
+        // Check if this misconception already exists
+        const existingMisconception = await pool.request()
+          .input('studentId', sql.Int, req.userId)
+          .input('topic', sql.NVarChar, conceptName)
+          .query(`
+            SELECT id, occurrences FROM StudentMisconceptions
+            WHERE student_id = @studentId AND topic = @topic AND resolved = 0
+            ORDER BY occurrences DESC
+          `);
+
+        if (existingMisconception.recordset.length > 0) {
+          await pool.request()
+            .input('id', sql.Int, existingMisconception.recordset[0].id)
+            .query(`UPDATE StudentMisconceptions SET occurrences = occurrences + 1, last_detected = GETDATE(), updated_at = GETDATE() WHERE id = @id`);
+        } else {
+          await pool.request()
+            .input('studentId', sql.Int, req.userId)
+            .input('conceptId', sql.Int, question.concept_id)
+            .input('topic', sql.NVarChar, conceptName)
+            .input('misconception', sql.NVarChar, misconception)
+            .query(`
+              INSERT INTO StudentMisconceptions (student_id, concept_id, topic, misconception)
+              VALUES (@studentId, @conceptId, @topic, @misconception)
+            `);
+        }
       }
     } else {
       // Correct answer - increase mastery
@@ -240,6 +317,18 @@ router.get('/profile', authenticate, async (req, res) => {
 
     res.json(result.recordset);
   } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get Learning Twin context for AI tutoring
+router.get('/learning-context', authenticate, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const context = await getLearningTwinContext(pool, req.userId);
+    res.json({ context });
+  } catch (err) {
+    console.error('Get learning context error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
