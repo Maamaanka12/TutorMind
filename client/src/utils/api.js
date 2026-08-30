@@ -61,4 +61,11 @@ export const api = {
   reviewFlashcard: (id, correct) => request(`/flashcards/${id}/review`, { method: 'POST', body: JSON.stringify({ correct }) }),
   updateFlashcard: (id, body) => request(`/flashcards/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteFlashcard: (id) => request(`/flashcards/${id}`, { method: 'DELETE' }),
+
+  // Exams
+  generateExam: (body) => request('/exams/generate', { method: 'POST', body: JSON.stringify(body) }),
+  getExam: (id) => request(`/exams/${id}`),
+  answerExamQuestion: (examId, body) => request(`/exams/${examId}/answer`, { method: 'POST', body: JSON.stringify(body) }),
+  submitExam: (examId) => request(`/exams/${examId}/submit`, { method: 'POST' }),
+  getExamHistory: () => request('/exams'),
 };
