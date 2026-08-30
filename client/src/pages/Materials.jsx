@@ -76,7 +76,7 @@ export default function Materials() {
       }
 
       const formData = new FormData();
-      formData.append('title', title);
+      if (title) formData.append('title', title);
       if (file) {
         formData.append('file', file);
       } else {
@@ -154,14 +154,18 @@ export default function Materials() {
 
         <form onSubmit={handleUpload} className="space-y-5">
           <div>
-            <label className="block text-sm font-bold text-primary-700 dark:text-primary-300 mb-2">Title</label>
+            <label className="block text-sm font-bold text-primary-700 dark:text-primary-300 mb-2">
+              Title
+              {!file && <span className="text-red-400">*</span>}
+              {file && <span className="text-primary-400 dark:text-primary-600 font-normal"> (auto-generated if empty)</span>}
+            </label>
             <input
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g., Chapter 5 — Photosynthesis"
+              placeholder={file ? 'Leave empty to auto-generate from content' : 'e.g., Chapter 5 — Photosynthesis'}
               className="clay-input"
-              required
+              required={!file}
             />
           </div>
 

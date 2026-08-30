@@ -40,10 +40,22 @@ async function extractPptxText(buffer) {
   return texts.join('\n\n');
 }
 
+// Generate a short descriptive title from content using Gemini
+async function generateTitleFromContent(content, originalFilename) {
+  const { GoogleGenerativeAI } = await import('@google/generative-ai');
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+  const prompt = `Read the following educational material and return ONLY a short, descriptive title (max 60 characters) that accurately reflects what the content is about. Do not use quotes or any extra text — just the title.\n\nOriginal filename: ${originalFilename}\n\nContent preview:\n${content.substring(0, 3000)}`;
+
+  const result = await model.generateContent(prompt);
+  return result.response.text().trim().replace(/^"|"$/g, '');
+}
+
 // Upload material (text, PDF, DOCX, PPTX, or TXT)
 router.post('/', authenticate, upload.single('file'), async (req, res) => {
   try {
-    const { title, content } = req.body;
+    let { title, content } = req.body;
     let materialContent = content;
 
     // If a file was uploaded
@@ -61,10 +73,25 @@ router.post('/', authenticate, upload.single('file'), async (req, res) => {
       } else if (ext === 'txt') {
         materialContent = req.file.buffer.toString('utf-8');
       }
+
+      // Auto-generate title from content if none provided
+      if (!title && materialContent) {
+        try {
+          title = await generateTitleFromContent(materialContent, req.file.originalname);
+        } catch (aiErr) {
+          console.error('AI title generation failed, using filename:', aiErr.message);
+          title = req.file.originalname.replace(/\.[^.]+$/, ''); // fallback to filename without extension
+        }
+      }
     }
 
-    if (!title || !materialContent) {
-      return res.status(400).json({ error: 'Title and content are required' });
+    if (!materialContent) {
+      return res.status(400).json({ error: 'Content is required' });
+    }
+
+    // If still no title, fallback to filename or generic
+    if (!title) {
+      title = req.file ? req.file.originalname.replace(/\.[^.]+$/, '') : 'Untitled Material';
     }
 
     const pool = await getPool();
