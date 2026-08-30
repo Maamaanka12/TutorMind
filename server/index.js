@@ -5,6 +5,7 @@ import initializeDatabase from './schema.js';
 import authRoutes from './routes/auth.js';
 import materialsRoutes from './routes/materials.js';
 import aiRoutes from './routes/ai.js';
+import flashcardsRoutes from './routes/flashcards.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -17,6 +18,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api/auth', authRoutes);
 app.use('/api/materials', materialsRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/flashcards', flashcardsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

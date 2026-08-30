@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard';
 import Materials from './pages/Materials';
 import Assessment from './pages/Assessment';
 import LearningSession from './pages/LearningSession';
+import Flashcards from './pages/Flashcards';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -37,6 +38,7 @@ export default function App() {
             <Route path="/materials" element={<ProtectedRoute><Materials /></ProtectedRoute>} />
             <Route path="/assessment/:conceptId" element={<ProtectedRoute><Assessment /></ProtectedRoute>} />
             <Route path="/learn/:materialId" element={<ProtectedRoute><LearningSession /></ProtectedRoute>} />
+            <Route path="/flashcards" element={<ProtectedRoute><Flashcards /></ProtectedRoute>} />
           </Routes>
         </main>
       </div>

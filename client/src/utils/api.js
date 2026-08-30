@@ -49,4 +49,16 @@ export const api = {
   evaluate: (questionId, selectedAnswer) => request('/ai/evaluate', { method: 'POST', body: JSON.stringify({ questionId, selectedAnswer }) }),
   getProfile: () => request('/ai/profile'),
   getMisconceptions: () => request('/ai/misconceptions'),
+
+  // Flashcards
+  generateFlashcards: (body) => request('/flashcards/generate', { method: 'POST', body: JSON.stringify(body) }),
+  getFlashcards: (params) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/flashcards?${query}`);
+  },
+  getFlashcardStats: () => request('/flashcards/stats'),
+  getFlashcardsForReview: (limit) => request(`/flashcards/review?limit=${limit || 20}`),
+  reviewFlashcard: (id, correct) => request(`/flashcards/${id}/review`, { method: 'POST', body: JSON.stringify({ correct }) }),
+  updateFlashcard: (id, body) => request(`/flashcards/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteFlashcard: (id) => request(`/flashcards/${id}`, { method: 'DELETE' }),
 };
