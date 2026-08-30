@@ -39,6 +39,7 @@ export const api = {
   // Materials
   getMaterials: () => request('/materials'),
   getMaterial: (id) => request(`/materials/${id}`),
+  previewMaterial: (formData) => request('/materials/preview', { method: 'POST', body: formData }),
   uploadMaterial: (formData) => request('/materials', { method: 'POST', body: formData }),
   deleteMaterial: (id) => request(`/materials/${id}`, { method: 'DELETE' }),
 

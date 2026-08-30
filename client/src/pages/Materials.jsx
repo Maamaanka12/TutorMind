@@ -9,6 +9,8 @@ export default function Materials() {
   const [content, setContent] = useState('');
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewData, setPreviewData] = useState(null); // { title, content, filename }
   const [analyzing, setAnalyzing] = useState(null);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
@@ -60,39 +62,70 @@ export default function Materials() {
     setFile(f);
   }
 
-  async function handleUpload(e) {
+  // Step 1: Upload file for preview (extract content + generate title)
+  async function handlePreview(e) {
     e.preventDefault();
     setError('');
-    setUploading(true);
+    setPreviewing(true);
 
     try {
       if (file) {
         const err = validateFile(file);
         if (err) {
           setError(err);
-          setUploading(false);
+          setPreviewing(false);
           return;
         }
-      }
 
-      const formData = new FormData();
-      if (title) formData.append('title', title);
-      if (file) {
+        const formData = new FormData();
         formData.append('file', file);
+        const data = await api.previewMaterial(formData);
+        setPreviewData(data);
+        setTitle(data.title);
+        setContent(data.content);
       } else {
-        formData.append('content', content);
+        // No file — paste content directly, skip preview
+        if (!title || !content) {
+          setError('Title and content are required');
+          setPreviewing(false);
+          return;
+        }
+        setPreviewData({ title, content, filename: null });
       }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  // Step 2: Save the material with the (possibly edited) title
+  async function handleSave() {
+    setError('');
+    setUploading(true);
+
+    try {
+      const formData = new FormData();
+      formData.append('title', title);
+      formData.append('content', content);
 
       await api.uploadMaterial(formData);
       setTitle('');
       setContent('');
       setFile(null);
+      setPreviewData(null);
       loadMaterials();
     } catch (err) {
       setError(err.message);
     } finally {
       setUploading(false);
     }
+  }
+
+  function handleCancelPreview() {
+    setPreviewData(null);
+    setTitle('');
+    setContent('');
   }
 
   async function handleAnalyze(materialId) {
@@ -152,60 +185,117 @@ export default function Materials() {
           </div>
         )}
 
-        <form onSubmit={handleUpload} className="space-y-5">
-          <div>
-            <label className="block text-sm font-bold text-primary-700 dark:text-primary-300 mb-2">
-              Title
-              {!file && <span className="text-red-400">*</span>}
-              {file && <span className="text-primary-400 dark:text-primary-600 font-normal"> (auto-generated if empty)</span>}
-            </label>
-            <input
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder={file ? 'Leave empty to auto-generate from content' : 'e.g., Chapter 5 — Photosynthesis'}
-              className="clay-input"
-              required={!file}
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-bold text-primary-700 dark:text-primary-300 mb-2">
-              Content <span className="text-primary-400 dark:text-primary-600 font-normal">(paste text or upload file)</span>
-            </label>
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Paste your learning material here..."
-              rows={6}
-              className="clay-input resize-none"
-            />
-            <div className="mt-3 flex items-center gap-3">
-              <label className="clay-btn-outline text-sm py-2 px-4 inline-flex items-center gap-1.5">
-                <Upload size={14} />
-                {file ? file.name : 'Choose File'}
-                <input
-                  type="file"
-                  accept=".pdf,.txt,.docx,.pptx"
-                  onChange={handleFileChange}
-                  className="sr-only"
-                />
-              </label>
+        {/* Step 1: File selection / paste */}
+        {!previewData && (
+          <form onSubmit={handlePreview} className="space-y-5">
+            <div>
+              <label className="block text-sm font-bold text-primary-700 dark:text-primary-300 mb-2">Title</label>
+              <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="e.g., Chapter 5 — Photosynthesis"
+                className="clay-input"
+                required={!file}
+              />
               {file && (
-                <span className="text-xs text-primary-400 dark:text-primary-500 font-semibold">{(file.size / 1024).toFixed(0)} KB</span>
+                <p className="text-xs text-primary-400 dark:text-primary-500 mt-1 font-semibold">Title will be auto-generated from file content — you can edit it next.</p>
               )}
             </div>
-          </div>
 
-          <button
-            type="submit"
-            disabled={uploading || (!content && !file)}
-            className="clay-btn-primary flex items-center gap-2 disabled:opacity-50"
-          >
-            {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
-            {uploading ? 'Uploading…' : 'Upload Material'}
-          </button>
-        </form>
+            <div>
+              <label className="block text-sm font-bold text-primary-700 dark:text-primary-300 mb-2">
+                Content <span className="text-primary-400 dark:text-primary-600 font-normal">(paste text or upload file)</span>
+              </label>
+              <textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                placeholder="Paste your learning material here..."
+                rows={6}
+                className="clay-input resize-none"
+              />
+              <div className="mt-3 flex items-center gap-3">
+                <label className="clay-btn-outline text-sm py-2 px-4 inline-flex items-center gap-1.5">
+                  <Upload size={14} />
+                  {file ? file.name : 'Choose File'}
+                  <input
+                    type="file"
+                    accept=".pdf,.txt,.docx,.pptx"
+                    onChange={handleFileChange}
+                    className="sr-only"
+                  />
+                </label>
+                {file && (
+                  <span className="text-xs text-primary-400 dark:text-primary-500 font-semibold">{(file.size / 1024).toFixed(0)} KB</span>
+                )}
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={previewing || (!content && !file)}
+              className="clay-btn-primary flex items-center gap-2 disabled:opacity-50"
+            >
+              {previewing ? <Loader2 size={16} className="animate-spin" /> : <Brain size={16} />}
+              {previewing ? 'Analyzing content…' : 'Review & Edit Title'}
+            </button>
+          </form>
+        )}
+
+        {/* Step 2: Edit auto-generated title before saving */}
+        {previewData && (
+          <div className="space-y-5">
+            <div className="bg-blue-50 dark:bg-blue-900/30 border-2 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 px-4 py-3 rounded-clay text-sm font-semibold"
+              style={{ boxShadow: '3px 3px 0 0 #BFDBFE' }}>
+              {previewData.filename
+                ? `✅ Extracted content from "${previewData.filename}" — review the title below and save.`
+                : '✅ Content ready — review the title below and save.'}
+            </div>
+
+            <div>
+              <label className="block text-sm font-bold text-primary-700 dark:text-primary-300 mb-2">Title</label>
+              <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="e.g., Chapter 5 — Photosynthesis"
+                className="clay-input"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-bold text-primary-700 dark:text-primary-300 mb-2">Content Preview</label>
+              <textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                rows={6}
+                className="clay-input resize-none"
+                readOnly
+              />
+              <p className="text-xs text-primary-400 dark:text-primary-500 mt-1 font-semibold">
+                {content.length.toLocaleString()} characters extracted
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleSave}
+                disabled={uploading || !title}
+                className="clay-btn-primary flex items-center gap-2 disabled:opacity-50"
+              >
+                {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+                {uploading ? 'Saving…' : 'Save Material'}
+              </button>
+              <button
+                onClick={handleCancelPreview}
+                className="clay-btn-outline text-sm py-2 px-4"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Materials List */}

@@ -52,6 +52,52 @@ async function generateTitleFromContent(content, originalFilename) {
   return result.response.text().trim().replace(/^"|"$/g, '');
 }
 
+// Preview: extract file content and generate title without saving
+router.post('/preview', authenticate, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file provided' });
+    }
+
+    const ext = req.file.originalname.split('.').pop().toLowerCase();
+    let materialContent = '';
+
+    if (ext === 'pdf') {
+      const data = await pdfParse(req.file.buffer);
+      materialContent = data.text;
+    } else if (ext === 'docx') {
+      const result = await mammoth.extractRawText({ buffer: req.file.buffer });
+      materialContent = result.value;
+    } else if (ext === 'pptx') {
+      materialContent = await extractPptxText(req.file.buffer);
+    } else if (ext === 'txt') {
+      materialContent = req.file.buffer.toString('utf-8');
+    }
+
+    if (!materialContent) {
+      return res.status(400).json({ error: 'Could not extract text from this file' });
+    }
+
+    // Auto-generate title from content
+    let title = '';
+    try {
+      title = await generateTitleFromContent(materialContent, req.file.originalname);
+    } catch (aiErr) {
+      console.error('AI title generation failed, using filename:', aiErr.message);
+      title = req.file.originalname.replace(/\.[^.]+$/, '');
+    }
+
+    res.json({
+      title,
+      content: materialContent,
+      filename: req.file.originalname,
+    });
+  } catch (err) {
+    console.error('Preview error:', err);
+    res.status(500).json({ error: 'Failed to process file' });
+  }
+});
+
 // Upload material (text, PDF, DOCX, PPTX, or TXT)
 router.post('/', authenticate, upload.single('file'), async (req, res) => {
   try {
