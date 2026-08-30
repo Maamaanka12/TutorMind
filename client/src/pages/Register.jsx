@@ -40,7 +40,7 @@ export default function Register() {
         {error && (
           <div role="alert" aria-live="polite" className="bg-red-50 dark:bg-red-900/30 border-2 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 px-4 py-3 rounded-clay mb-6 text-sm font-semibold flex items-center gap-2"
             style={{ boxShadow: '3px 3px 0 0 #FECACA' }}>
-            <span className="text-lg">⚠️</span>
+            <span className="text-lg">!</span>
             {error}
           </div>
         )}

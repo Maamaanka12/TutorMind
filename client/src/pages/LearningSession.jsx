@@ -123,7 +123,7 @@ export default function LearningSession() {
               style={{ boxShadow: '3px 3px 0 0 #581C87' }}
             >
               {analyzing ? <Loader2 size={14} className="animate-spin" /> : <Brain size={14} />}
-              {analyzing ? 'Analyzing…' : 'AI Analyze'}
+              {analyzing ? 'Analyzing...' : 'AI Analyze'}
             </button>
           )}
         </div>

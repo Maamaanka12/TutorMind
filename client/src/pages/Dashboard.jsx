@@ -48,7 +48,7 @@ export default function Dashboard() {
       {/* Header */}
       <div className="mb-8 animate-slide-up">
         <h1 className="text-3xl md:text-4xl font-display font-bold text-primary-900 dark:text-primary-100">
-          Welcome back, <span className="text-primary-500 dark:text-primary-400">{user.name}</span> 👋
+          Welcome back, <span className="text-primary-500 dark:text-primary-400">{user.name}</span>
         </h1>
         <p className="text-primary-500 dark:text-primary-400 mt-1 font-body">Here's your learning progress overview</p>
       </div>
@@ -120,7 +120,7 @@ export default function Dashboard() {
                 <Sparkles size={28} className="text-green-400 dark:text-green-500" />
               </div>
               <p className="text-primary-400 dark:text-primary-500 font-semibold">No misconceptions yet</p>
-              <p className="text-primary-300 dark:text-primary-600 text-sm mt-1">Keep learning — you're doing great!</p>
+              <p className="text-primary-300 dark:text-primary-600 text-sm mt-1">Keep learning - you're doing great!</p>
             </div>
           ) : (
             <div className="space-y-3 max-h-80 overflow-y-auto pr-2">

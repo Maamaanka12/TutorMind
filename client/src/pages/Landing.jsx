@@ -5,7 +5,7 @@ const features = [
   {
     icon: Brain,
     title: 'Understand Your Gaps',
-    description: 'Our AI analyzes your responses to identify the root cause of misunderstandings — not just wrong answers.',
+    description: 'Our AI analyzes your responses to identify the root cause of misunderstandings - not just wrong answers.',
     color: 'bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400',
   },
   {
@@ -154,7 +154,7 @@ export default function Landing() {
       {/* Footer */}
       <footer className="py-8 border-t-2 border-primary-200 dark:border-primary-700 text-center">
         <p className="text-primary-400 dark:text-primary-500 text-sm font-semibold">
-          Built with 🧠 by AdaptLearn
+          Built with AI by AdaptLearn
         </p>
       </footer>
     </div>

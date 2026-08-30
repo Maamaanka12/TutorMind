@@ -10,11 +10,11 @@ async function verifyDatabase() {
       .query(`SELECT COUNT(*) as count FROM sysobjects WHERE name='${table}' AND xtype='U'`);
 
     if (result.recordset[0].count === 0) {
-      throw new Error(`❌ Table "${table}" not found. Please run init.sql first.`);
+      throw new Error(`Table "${table}" not found. Please run init.sql first.`);
     }
   }
 
-  console.log('✅ All database tables verified');
+  console.log('All database tables verified');
 }
 
 export default verifyDatabase;

@@ -74,7 +74,7 @@ export default function Assessment() {
       <div className="flex items-center justify-center h-64">
         <div className="text-center">
           <div className="w-12 h-12 border-4 border-primary-200 dark:border-primary-700 border-t-primary-500 dark:border-t-primary-400 rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-primary-500 dark:text-primary-400 font-semibold">Generating questions…</p>
+          <p className="text-primary-500 dark:text-primary-400 font-semibold">Generating questions...</p>
         </div>
       </div>
     );
@@ -191,7 +191,7 @@ export default function Assessment() {
               {result.isCorrect ? (
                 <>
                   <CheckCircle className="text-green-600 dark:text-green-400" size={20} />
-                  <span className="font-display font-bold text-green-700 dark:text-green-400">Correct! 🎉</span>
+                  <span className="font-display font-bold text-green-700 dark:text-green-400">Correct!</span>
                 </>
               ) : (
                 <>
@@ -226,7 +226,7 @@ export default function Assessment() {
               className="clay-btn-primary flex-1 flex items-center justify-center gap-2 disabled:opacity-50 py-3.5"
             >
               {submitting ? <Loader2 className="animate-spin" size={18} /> : null}
-              {submitting ? 'Evaluating…' : 'Submit Answer'}
+              {submitting ? 'Evaluating...' : 'Submit Answer'}
             </button>
           ) : (
             <div className="flex gap-3 w-full">

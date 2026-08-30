@@ -84,7 +84,7 @@ export default function Materials() {
         setTitle(data.title);
         setContent(data.content);
       } else {
-        // No file — paste content directly, skip preview
+        // No file - paste content directly, skip preview
         if (!title || !content) {
           setError('Title and content are required');
           setPreviewing(false);
@@ -177,11 +177,10 @@ export default function Materials() {
             style={{ boxShadow: '3px 3px 0 0 #FECACA' }}>
             {error}
           </div>
-        )}
-        {toast && (
-          <div role="status" aria-live="polite" className="bg-green-50 dark:bg-green-900/30 border-2 border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 px-4 py-3 rounded-clay mb-5 text-sm font-semibold"
-            style={{ boxShadow: '3px 3px 0 0 #BBF7D0' }}>
-            ✅ {toast}
+        )}            {toast && (
+              <div role="status" aria-live="polite" className="bg-green-50 dark:bg-green-900/30 border-2 border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 px-4 py-3 rounded-clay mb-5 text-sm font-semibold"
+                style={{ boxShadow: '3px 3px 0 0 #BBF7D0' }}>
+                {toast}
           </div>
         )}
 
@@ -194,12 +193,12 @@ export default function Materials() {
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g., Chapter 5 — Photosynthesis"
+                placeholder="e.g., Chapter 5 - Photosynthesis"
                 className="clay-input"
                 required={!file}
               />
               {file && (
-                <p className="text-xs text-primary-400 dark:text-primary-500 mt-1 font-semibold">Title will be auto-generated from file content — you can edit it next.</p>
+                <p className="text-xs text-primary-400 dark:text-primary-500 mt-1 font-semibold">Title will be auto-generated from file content - you can edit it next.</p>
               )}
             </div>
 
@@ -237,7 +236,7 @@ export default function Materials() {
               className="clay-btn-primary flex items-center gap-2 disabled:opacity-50"
             >
               {previewing ? <Loader2 size={16} className="animate-spin" /> : <Brain size={16} />}
-              {previewing ? 'Analyzing content…' : 'Review & Edit Title'}
+              {previewing ? 'Analyzing content...' : 'Review & Edit Title'}
             </button>
           </form>
         )}
@@ -248,8 +247,8 @@ export default function Materials() {
             <div className="bg-blue-50 dark:bg-blue-900/30 border-2 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400 px-4 py-3 rounded-clay text-sm font-semibold"
               style={{ boxShadow: '3px 3px 0 0 #BFDBFE' }}>
               {previewData.filename
-                ? `✅ Extracted content from "${previewData.filename}" — review the title below and save.`
-                : '✅ Content ready — review the title below and save.'}
+                ? `Extracted content from "${previewData.filename}" - review the title below and save.`
+                : 'Content ready - review the title below and save.'}
             </div>
 
             <div>
@@ -258,7 +257,7 @@ export default function Materials() {
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g., Chapter 5 — Photosynthesis"
+                placeholder="e.g., Chapter 5 - Photosynthesis"
                 className="clay-input"
                 required
               />
@@ -285,7 +284,7 @@ export default function Materials() {
                 className="clay-btn-primary flex items-center gap-2 disabled:opacity-50"
               >
                 {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
-                {uploading ? 'Saving…' : 'Save Material'}
+                {uploading ? 'Saving...' : 'Save Material'}
               </button>
               <button
                 onClick={handleCancelPreview}
@@ -338,7 +337,7 @@ export default function Materials() {
                   ) : (
                     <Brain size={14} />
                   )}
-                  {analyzing === m.id ? 'Analyzing…' : 'AI Analyze'}
+                  {analyzing === m.id ? 'Analyzing...' : 'AI Analyze'}
                 </button>
                 <button
                   onClick={() => navigate(`/learn/${m.id}`)}

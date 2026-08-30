@@ -20,7 +20,7 @@ export default function App() {
   return (
     <AuthProvider>
       <div className="min-h-screen bg-primary-50 dark:bg-primary-950 transition-colors duration-200">
-        {/* Skip to main content — visible on keyboard focus only */}
+        {/* Skip to main content - visible on keyboard focus only */}
         <a
           href="#main-content"
           className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[100] focus:bg-primary-500 focus:text-white focus:px-4 focus:py-2 focus:rounded-clay focus:font-bold focus:outline-none focus:ring-2 focus:ring-primary-300"

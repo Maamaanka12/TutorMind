@@ -26,7 +26,7 @@ router.post('/analyze', authenticate, async (req, res) => {
     const content = matResult.recordset[0].content;
 
     // Use Gemini to extract concepts
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const prompt = `Analyze this educational material and extract the key concepts. 
 Return a JSON array of objects with "name" (concept name), "description" (brief explanation), 
 and "difficulty" (1-5 scale). Material:\n\n${content.substring(0, 8000)}`;
@@ -76,7 +76,7 @@ router.post('/generate-questions', authenticate, async (req, res) => {
 
     const concept = conceptResult.recordset[0];
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const prompt = `Generate ${count} multiple-choice assessment questions for the concept: "${concept.name}".
 Description: ${concept.description}
 Difficulty level: ${concept.difficulty_level}/5
@@ -155,7 +155,7 @@ router.post('/evaluate', authenticate, async (req, res) => {
 
     if (!isCorrect) {
       // Use AI to detect misconception
-      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       const prompt = `A student was asked this question and answered incorrectly.
 Question: ${question.question_text}
 Options: ${question.options}

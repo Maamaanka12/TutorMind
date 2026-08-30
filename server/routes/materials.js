@@ -44,9 +44,9 @@ async function extractPptxText(buffer) {
 async function generateTitleFromContent(content, originalFilename) {
   const { GoogleGenerativeAI } = await import('@google/generative-ai');
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-  const prompt = `Read the following educational material and return ONLY a short, descriptive title (max 60 characters) that accurately reflects what the content is about. Do not use quotes or any extra text — just the title.\n\nOriginal filename: ${originalFilename}\n\nContent preview:\n${content.substring(0, 3000)}`;
+  const prompt = `Read the following educational material and return ONLY a short, descriptive title (max 60 characters) that accurately reflects what the content is about. Do not use quotes or any extra text - just the title.\n\nOriginal filename: ${originalFilename}\n\nContent preview:\n${content.substring(0, 3000)}`;
 
   const result = await model.generateContent(prompt);
   return result.response.text().trim().replace(/^"|"$/g, '');
