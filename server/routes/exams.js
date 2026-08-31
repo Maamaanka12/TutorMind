@@ -1,11 +1,10 @@
 import { Router } from 'express';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
+import { callAI, parseJSONArray } from '../utils/aiHelper.js';
 import 'dotenv/config';
 
 const router = Router();
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // Generate an exam using AI
 router.post('/generate', authenticate, async (req, res) => {
@@ -44,7 +43,6 @@ router.post('/generate', authenticate, async (req, res) => {
       : '';
 
     // AI generates the exam questions
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const prompt = `Generate an exam with ${totalQuestions} questions from the following material.
 Mix of question types: multiple choice, true/false, short answer, and code/output questions where appropriate.
 Difficulty level: ${difficulty}${weakAreasText}
@@ -62,15 +60,11 @@ Return a JSON array of objects with:
 
 Make questions genuinely useful for assessment. Cover different aspects of the material.`;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      return res.status(500).json({ error: 'AI could not generate exam questions' });
+    const { text } = await callAI(prompt);
+    const questions = parseJSONArray(text);
+    if (!questions) {
+      return res.status(502).json({ error: 'AI could not generate exam questions. Please try again.', aiError: true, errorType: 'parse' });
     }
-
-    const questions = JSON.parse(jsonMatch[0]);
 
     // Create exam record
     const examResult = await pool.request()
@@ -125,7 +119,10 @@ Make questions genuinely useful for assessment. Cover different aspects of the m
     });
   } catch (err) {
     console.error('Generate exam error:', err);
-    res.status(500).json({ error: 'Exam generation failed' });
+    if (err.userMessage) {
+      return res.status(err.status).json({ error: err.userMessage, aiError: true, errorType: err.type });
+    }
+    res.status(500).json({ error: 'Exam generation failed. Please try again.' });
   }
 });
 
@@ -293,7 +290,6 @@ router.post('/:id/submit', authenticate, async (req, res) => {
     const percentage = totalQuestions > 0 ? Math.round((score / totalQuestions) * 100) : 0;
 
     // AI analysis of performance
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const conceptBreakdown = Object.entries(conceptResults)
       .map(([name, data]) => `${name}: ${data.correct}/${data.total} (${Math.round(data.correct / data.total * 100)}%)`)
       .join('\n');
@@ -321,19 +317,18 @@ Return JSON with: "strongAreas" (array of strings), "weakAreas" (array of string
 
     let analysis = {};
     try {
-      const aiResult = await model.generateContent(analysisPrompt);
-      const aiText = aiResult.response.text();
-      const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        analysis = JSON.parse(jsonMatch[0]);
-      }
+      const { text: aiText } = await callAI(analysisPrompt, { maxRetries: 1 });
+      const { parseJSONObject } = await import('../utils/aiHelper.js');
+      analysis = parseJSONObject(aiText) || {};
     } catch (aiErr) {
-      console.error('AI analysis failed:', aiErr.message);
+      console.error('AI analysis failed:', aiErr.detail || aiErr.message);
+      // Graceful fallback: use basic analytics from grading data
       analysis = {
         strongAreas: Object.entries(conceptResults).filter(([, d]) => d.correct / d.total >= 0.7).map(([n]) => n),
         weakAreas: Object.entries(conceptResults).filter(([, d]) => d.correct / d.total < 0.7).map(([n]) => n),
         detectedIssues: [],
-        recommendations: ['Review weak areas identified above.'],
+        recommendations: ['Review the weak areas identified above.', 'Try flashcards for topics below 70% mastery.'],
+        aiUnavailable: true,
       };
     }
 
@@ -382,7 +377,7 @@ Return JSON with: "strongAreas" (array of strings), "weakAreas" (array of string
     });
   } catch (err) {
     console.error('Submit exam error:', err);
-    res.status(500).json({ error: 'Exam submission failed' });
+    res.status(500).json({ error: 'Exam submission failed. Please try again.' });
   }
 });
 

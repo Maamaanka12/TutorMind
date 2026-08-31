@@ -26,7 +26,12 @@ async function request(path, options = {}) {
   }
 
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  if (!res.ok) {
+    const err = new Error(data.error || 'Request failed');
+    err.aiError = data.aiError || false;
+    err.errorType = data.errorType || null;
+    throw err;
+  }
   return data;
 }
 

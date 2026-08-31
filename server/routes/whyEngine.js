@@ -1,11 +1,10 @@
 import { Router } from 'express';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
+import { callAI, parseJSONObject } from '../utils/aiHelper.js';
 import 'dotenv/config';
 
 const router = Router();
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // ============================================
 // POST /api/why-engine/analyze
@@ -58,7 +57,6 @@ router.post('/analyze', authenticate, async (req, res) => {
     }
 
     // Use AI to analyze the misconception
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const prompt = `You are the "Why Engine" of an adaptive learning system. Your job is to identify WHY a student got a question wrong — not just say "wrong answer."
 
 QUESTION: ${questionText}
@@ -88,15 +86,12 @@ Return JSON:
   "followUpCorrectAnswer": "the correct option"
 }`;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    const { text } = await callAI(prompt);
+    const analysis = parseJSONObject(text);
 
-    if (!jsonMatch) {
-      return res.status(500).json({ error: 'AI could not generate analysis' });
+    if (!analysis) {
+      return res.status(502).json({ error: 'AI could not generate analysis. Please try again.', aiError: true, errorType: 'parse' });
     }
-
-    const analysis = JSON.parse(jsonMatch[0]);
 
     // Get concept name for topic
     let topic = 'Unknown';
@@ -197,7 +192,10 @@ Return JSON:
     });
   } catch (err) {
     console.error('Why Engine analyze error:', err);
-    res.status(500).json({ error: 'Analysis failed' });
+    if (err.userMessage) {
+      return res.status(err.status).json({ error: err.userMessage, aiError: true, errorType: err.type });
+    }
+    res.status(500).json({ error: 'Analysis failed. Please try again later.' });
   }
 });
 
@@ -327,7 +325,6 @@ router.post('/resolve', authenticate, async (req, res) => {
       }
 
       // Generate another targeted follow-up
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       const followUpPrompt = `The student still has a misconception after one remediation attempt.
 
 Original question: ${session.original_question}
@@ -349,12 +346,10 @@ Return JSON:
 }`;
 
       try {
-        const result = await model.generateContent(followUpPrompt);
-        const text = result.response.text();
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        const { text } = await callAI(followUpPrompt, { maxRetries: 1 });
+        const newFollowUp = parseJSONObject(text);
 
-        if (jsonMatch) {
-          const newFollowUp = JSON.parse(jsonMatch[0]);
+        if (newFollowUp) {
 
           // Update the session with the new follow-up
           await pool.request()
@@ -380,7 +375,7 @@ Return JSON:
           };
         }
       } catch (aiErr) {
-        console.error('Why Engine follow-up generation error:', aiErr);
+        console.error('Why Engine follow-up generation error:', aiErr.detail || aiErr.message);
         // Continue without a new follow-up — the student still gets feedback
       }
 
@@ -398,7 +393,10 @@ Return JSON:
     });
   } catch (err) {
     console.error('Why Engine resolve error:', err);
-    res.status(500).json({ error: 'Resolution check failed' });
+    if (err.userMessage) {
+      return res.status(err.status).json({ error: err.userMessage, aiError: true, errorType: err.type });
+    }
+    res.status(500).json({ error: 'Resolution check failed. Please try again later.' });
   }
 });
 
@@ -539,7 +537,6 @@ router.post('/free-form', authenticate, async (req, res) => {
       existingMisconceptions = miscResult.recordset;
     }
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const prompt = `You are the "Why Engine" of an adaptive learning system.
 
 A student was asked a question and gave an incorrect answer. Analyze why.
@@ -566,15 +563,12 @@ Return JSON:
   "followUpCorrectAnswer": "the correct option"
 }`;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    const { text } = await callAI(prompt);
+    const analysis = parseJSONObject(text);
 
-    if (!jsonMatch) {
-      return res.status(500).json({ error: 'AI could not generate analysis' });
+    if (!analysis) {
+      return res.status(502).json({ error: 'AI could not generate analysis. Please try again.', aiError: true, errorType: 'parse' });
     }
-
-    const analysis = JSON.parse(jsonMatch[0]);
     const resolvedTopic = topic || analysis.topic || 'Unknown';
 
     // Store misconception
@@ -646,7 +640,10 @@ Return JSON:
     });
   } catch (err) {
     console.error('Why Engine free-form error:', err);
-    res.status(500).json({ error: 'Analysis failed' });
+    if (err.userMessage) {
+      return res.status(err.status).json({ error: err.userMessage, aiError: true, errorType: err.type });
+    }
+    res.status(500).json({ error: 'Analysis failed. Please try again later.' });
   }
 });
 

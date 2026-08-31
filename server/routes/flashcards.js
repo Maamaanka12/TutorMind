@@ -1,11 +1,10 @@
 import { Router } from 'express';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
+import { callAI, parseJSONArray } from '../utils/aiHelper.js';
 import 'dotenv/config';
 
 const router = Router();
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // Generate flashcards from material using AI
 router.post('/generate', authenticate, async (req, res) => {
@@ -26,7 +25,6 @@ router.post('/generate', authenticate, async (req, res) => {
     const material = matResult.recordset[0];
     const difficultyPrompt = difficulty ? `Difficulty level: ${difficulty}/5` : 'Vary difficulty levels between 1-5';
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const prompt = `Generate ${count} high-quality flashcards from this educational material. 
 Focus on important concepts, definitions, formulas, and key relationships. 
 Avoid trivial or duplicate cards.
@@ -46,15 +44,11 @@ Return a JSON array of objects with:
 
 Make cards genuinely useful for learning. Include a mix of question types.`;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      return res.status(500).json({ error: 'AI could not generate flashcards' });
+    const { text } = await callAI(prompt);
+    const cards = parseJSONArray(text);
+    if (!cards) {
+      return res.status(502).json({ error: 'AI could not generate flashcards. Please try again.', aiError: true, errorType: 'parse' });
     }
-
-    const cards = JSON.parse(jsonMatch[0]);
 
     // Get concepts for linking
     const conceptsResult = await pool.request()
@@ -108,7 +102,10 @@ Make cards genuinely useful for learning. Include a mix of question types.`;
     res.json({ cards: savedCards, message: `Generated ${savedCards.length} flashcards` });
   } catch (err) {
     console.error('Generate flashcards error:', err);
-    res.status(500).json({ error: 'Flashcard generation failed' });
+    if (err.userMessage) {
+      return res.status(err.status).json({ error: err.userMessage, aiError: true, errorType: err.type });
+    }
+    res.status(500).json({ error: 'Flashcard generation failed. Please try again.' });
   }
 });
 

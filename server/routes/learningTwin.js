@@ -1,11 +1,10 @@
 import { Router } from 'express';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
+import { callAI, parseJSONArray } from '../utils/aiHelper.js';
 import 'dotenv/config';
 
 const router = Router();
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // Get full Learning Twin data
 router.get('/', authenticate, async (req, res) => {
@@ -334,7 +333,6 @@ router.post('/detect-patterns', authenticate, async (req, res) => {
     }
 
     // Use AI to detect patterns
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const prompt = `Analyze this student's learning data and identify behavioral patterns.
 Only report patterns that are supported by clear evidence. Do NOT make psychological claims.
 
@@ -363,15 +361,18 @@ Return a JSON array of objects with:
 
 Only include patterns where confidence >= 0.6.`;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-
-    if (!jsonMatch) {
-      return res.json({ patterns: [] });
+    let detectedPatterns = [];
+    try {
+      const { text } = await callAI(prompt, { maxRetries: 1 });
+      detectedPatterns = parseJSONArray(text) || [];
+    } catch (aiErr) {
+      console.error('AI pattern detection failed:', aiErr.detail || aiErr.message);
+      return res.json({
+        patterns: [],
+        message: 'AI pattern detection is temporarily unavailable. Please try again later.',
+        aiUnavailable: true,
+      });
     }
-
-    const detectedPatterns = JSON.parse(jsonMatch[0]);
 
     // Save patterns to database
     for (const pattern of detectedPatterns) {
@@ -413,7 +414,10 @@ Only include patterns where confidence >= 0.6.`;
     res.json({ patterns: detectedPatterns, count: detectedPatterns.length });
   } catch (err) {
     console.error('Detect patterns error:', err);
-    res.status(500).json({ error: 'Pattern detection failed' });
+    if (err.userMessage) {
+      return res.status(err.status).json({ error: err.userMessage, aiError: true, errorType: err.type });
+    }
+    res.status(500).json({ error: 'Pattern detection failed. Please try again later.' });
   }
 });
 

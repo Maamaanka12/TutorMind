@@ -18,6 +18,7 @@ export default function ExamMode() {
   const [view, setView] = useState('setup'); // setup | taking | results
   const [materials, setMaterials] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   // Setup state
   const [title, setTitle] = useState('');
@@ -93,7 +94,7 @@ export default function ExamMode() {
       startTimeRef.current = Date.now();
       setView('taking');
     } catch (err) {
-      alert('Failed to generate exam: ' + err.message);
+      setError(err.aiError ? err.message : 'Failed to generate exam: ' + err.message);
     } finally {
       setLoading(false);
     }
@@ -121,7 +122,7 @@ export default function ExamMode() {
       setResults(data);
       setView('results');
     } catch (err) {
-      alert('Failed to submit exam: ' + err.message);
+      setError(err.aiError ? err.message : 'Failed to submit exam: ' + err.message);
     } finally {
       setLoading(false);
     }
@@ -135,7 +136,7 @@ export default function ExamMode() {
       setResults(data);
       setView('results');
     } catch (err) {
-      alert('Failed to submit exam: ' + err.message);
+      setError(err.aiError ? err.message : 'Failed to submit exam: ' + err.message);
     } finally {
       setLoading(false);
     }
@@ -163,6 +164,19 @@ export default function ExamMode() {
             <p className="text-primary-500 dark:text-primary-400 text-sm">Focused assessment — no hints, no explanations</p>
           </div>
         </div>
+
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border-2 border-red-200 dark:border-red-800 rounded-clay text-red-700 dark:text-red-300 text-sm font-semibold flex items-start gap-3">
+            <AlertCircle size={18} className="flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p>{error}</p>
+              {error.includes('temporarily') && (
+                <p className="text-xs text-red-500 dark:text-red-400 mt-1 font-normal">Please wait a few minutes and try again.</p>
+              )}
+            </div>
+            <button onClick={() => setError('')} className="text-red-400 hover:text-red-600 flex-shrink-0">✕</button>
+          </div>
+        )}
 
         <div className="bg-white dark:bg-primary-900 rounded-clay p-6 border-2 border-primary-200 dark:border-primary-700 space-y-5" style={{ boxShadow: dark ? '4px 4px 0 0 #312E81' : '4px 4px 0 0 #C7D2FE' }}>
           <div>
@@ -553,7 +567,16 @@ export default function ExamMode() {
           <div className="bg-white dark:bg-primary-900 rounded-clay p-6 border-2 border-primary-200 dark:border-primary-700 mb-6" style={{ boxShadow: dark ? '4px 4px 0 0 #312E81' : '4px 4px 0 0 #C7D2FE' }}>
             <h2 className="font-display font-bold text-lg text-primary-900 dark:text-primary-100 mb-4 flex items-center gap-2">
               <Lightbulb size={20} className="text-yellow-500" /> AI Analysis
+              {analysis.aiUnavailable && (
+                <span className="ml-auto text-xs font-semibold px-2 py-0.5 rounded-full bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-400">Basic Analysis</span>
+              )}
             </h2>
+
+            {analysis.aiUnavailable && (
+              <p className="text-xs text-primary-500 dark:text-primary-400 mb-4 bg-yellow-50 dark:bg-yellow-900/20 px-3 py-2 rounded-clay border border-yellow-200 dark:border-yellow-800">
+                AI analysis was temporarily unavailable. Showing basic performance breakdown based on grading data.
+              </p>
+            )}
 
             {analysis.strongAreas?.length > 0 && (
               <div className="mb-4">

@@ -15,6 +15,7 @@ export default function LearningTwin() {
   const [loading, setLoading] = useState(true);
   const [detecting, setDetecting] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
+  const [patternError, setPatternError] = useState('');
 
   useEffect(() => {
     loadData();
@@ -34,11 +35,13 @@ export default function LearningTwin() {
 
   const handleDetectPatterns = async () => {
     setDetecting(true);
+    setPatternError('');
     try {
       await api.detectPatterns();
       await loadData(); // Reload with new patterns
     } catch (err) {
       console.error('Pattern detection failed:', err);
+      setPatternError(err.aiError ? err.message : 'Pattern detection failed. Please try again later.');
     } finally {
       setDetecting(false);
     }
@@ -114,6 +117,16 @@ export default function LearningTwin() {
           Detect Patterns
         </button>
       </div>
+
+      {patternError && (
+        <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border-2 border-red-200 dark:border-red-800 rounded-clay text-red-700 dark:text-red-300 text-sm font-semibold flex items-start gap-3">
+          <AlertTriangle size={18} className="flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p>{patternError}</p>
+          </div>
+          <button onClick={() => setPatternError('')} className="text-red-400 hover:text-red-600 flex-shrink-0">✕</button>
+        </div>
+      )}
 
       {/* Overall Mastery Card */}
       <div className={`rounded-clay p-6 border-2 mb-6 ${masteryBg(data.overallMastery)}`} style={{ boxShadow: dark ? '4px 4px 0 0 #1E1B4B' : '4px 4px 0 0 #C7D2FE' }}>
