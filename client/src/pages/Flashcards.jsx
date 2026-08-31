@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../utils/api';
+import { useTheme } from '../utils/ThemeContext';
 import {
   Brain, Loader2, Plus, ChevronRight, ArrowLeft, RotateCcw,
   CheckCircle, XCircle, BookOpen, Target, TrendingUp, Clock,
@@ -9,6 +10,7 @@ import {
 
 export default function Flashcards() {
   const navigate = useNavigate();
+  const { dark } = useTheme();
   const [materials, setMaterials] = useState([]);
   const [stats, setStats] = useState(null);
   const [view, setView] = useState('dashboard');

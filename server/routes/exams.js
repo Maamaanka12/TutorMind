@@ -18,7 +18,10 @@ router.post('/generate', authenticate, async (req, res) => {
     const matId = materialId ? parseId(materialId) : null;
     const safeQuestions = clampInt(totalQuestions, 1, 50, 10);
     const safeMinutes = clampInt(timeLimitMinutes, 5, 180, 30);
-    const safeDifficulty = clampInt(difficulty, 1, 5, undefined);
+    // Map string difficulty values to numeric before clamping
+    const difficultyMap = { easy: 2, hard: 5, adaptive: undefined };
+    const numericDifficulty = difficultyMap[difficulty] ?? clampInt(difficulty, 1, 5, undefined);
+    const safeDifficulty = numericDifficulty;
     const safeTitle = sanitizeString(title, 500) || 'Exam';
 
     const pool = await getPool();

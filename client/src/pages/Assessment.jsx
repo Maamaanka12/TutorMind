@@ -32,8 +32,25 @@ export default function Assessment() {
     if (!selectedAnswer) return;
     setSubmitting(true);
     try {
-      const res = await api.evaluate(questions[currentIndex].id, selectedAnswer);
-      setResult(res);
+      const question = questions[currentIndex];
+      const isFollowUp = typeof question.id === 'string' && question.id.startsWith('followup-');
+
+      if (isFollowUp) {
+        // Evaluate follow-up question client-side (not in DB)
+        const correct = selectedAnswer === question.correctAnswer;
+        setResult({
+          isCorrect: correct,
+          correctAnswer: question.correctAnswer,
+          misconception: null,
+          explanation: correct
+            ? 'Correct! You understood the follow-up.'
+            : 'Not quite. The correct answer is shown above. Try reviewing the concept again.',
+          followUpQuestion: null,
+        });
+      } else {
+        const res = await api.evaluate(question.id, selectedAnswer);
+        setResult(res);
+      }
     } catch (err) {
       console.error(err);
     } finally {
