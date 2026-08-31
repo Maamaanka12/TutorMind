@@ -82,6 +82,11 @@ export const api = {
   recordMisconception: (body) => request('/learning-twin/misconceptions', { method: 'POST', body: JSON.stringify(body) }),
   resolveMisconception: (id) => request(`/learning-twin/misconceptions/${id}/resolve`, { method: 'PUT' }),
   detectPatterns: () => request('/learning-twin/detect-patterns', { method: 'POST' }),
+  syncLearningTwin: () => request('/learning-twin/sync', { method: 'POST' }),
+  getLearningCycle: () => request('/learning-twin/cycle'),
+
+  // Flashcard session tracking
+  completeFlashcardSession: (body) => request('/flashcards/session-complete', { method: 'POST', body: JSON.stringify(body) }),
 
   // Why Engine
   analyzeWrongAnswer: (body) => request('/why-engine/analyze', { method: 'POST', body: JSON.stringify(body) }),

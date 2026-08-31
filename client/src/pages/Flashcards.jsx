@@ -92,6 +92,8 @@ export default function Flashcards() {
     const card = studyCards[currentCardIndex];
     try {
       await api.reviewFlashcard(card.id, correct);
+      const newCorrect = sessionResults.correct + (correct ? 1 : 0);
+      const newIncorrect = sessionResults.incorrect + (correct ? 0 : 1);
       setSessionResults(prev => ({
         correct: prev.correct + (correct ? 1 : 0),
         incorrect: prev.incorrect + (correct ? 0 : 1),
@@ -102,11 +104,14 @@ export default function Flashcards() {
         setAnswered(false);
       } else {
         setStudyComplete(true);
+        // ─── LEARNING LOOP: Trigger pattern detection on session complete ───
+        api.completeFlashcardSession({ correctCount: newCorrect, incorrectCount: newIncorrect })
+          .catch(() => {}); // fire-and-forget
       }
     } catch (err) {
       console.error(err);
     }
-  }, [studyCards, currentCardIndex]);
+  }, [studyCards, currentCardIndex, sessionResults]);
 
   // Keyboard shortcuts for study mode
   useEffect(() => {

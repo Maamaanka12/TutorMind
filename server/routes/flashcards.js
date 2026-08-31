@@ -311,7 +311,7 @@ router.post('/:id/review', authenticate, async (req, res) => {
         WHERE student_id = @studentId AND flashcard_id = @flashcardId
       `);
 
-    // Update KnowledgeProfile if card is linked to a concept
+    // ─── LEARNING LOOP: Update KnowledgeProfile mastery ───
     const cardResult = await pool.request()
       .input('id', sql.Int, flashcardId)
       .input('studentId', sql.Int, req.userId)
@@ -319,17 +319,48 @@ router.post('/:id/review', authenticate, async (req, res) => {
 
     if (cardResult.recordset.length > 0 && cardResult.recordset[0].concept_id) {
       const conceptId = cardResult.recordset[0].concept_id;
+      const masteryDelta = correct ? 0.05 : -0.03;
       
-      if (correct) {
-        await pool.request()
-          .input('studentId', sql.Int, req.userId)
+      await pool.request()
+        .input('studentId', sql.Int, req.userId)
+        .input('conceptId', sql.Int, conceptId)
+        .input('delta', sql.Float, masteryDelta)
+        .query(`IF EXISTS (SELECT 1 FROM KnowledgeProfile WHERE student_id = @studentId AND concept_id = @conceptId)
+          UPDATE KnowledgeProfile SET mastery_level = CASE WHEN mastery_level + @delta > 1 THEN 1 WHEN mastery_level + @delta < 0 THEN 0 ELSE mastery_level + @delta END, updated_at = GETDATE()
+          WHERE student_id = @studentId AND concept_id = @conceptId
+        ELSE
+          INSERT INTO KnowledgeProfile (student_id, concept_id, mastery_level)
+          VALUES (@studentId, @conceptId, CASE WHEN @delta > 0 THEN 0.2 ELSE 0.1 END)`);
+
+      // Track flashcard-level misconceptions for the Learning Twin
+      if (!correct) {
+        const conceptNameResult = await pool.request()
           .input('conceptId', sql.Int, conceptId)
-          .query(`IF EXISTS (SELECT 1 FROM KnowledgeProfile WHERE student_id = @studentId AND concept_id = @conceptId)
-            UPDATE KnowledgeProfile SET mastery_level = CASE WHEN mastery_level + 0.05 > 1 THEN 1 ELSE mastery_level + 0.05 END, updated_at = GETDATE()
-            WHERE student_id = @studentId AND concept_id = @conceptId
-          ELSE
-            INSERT INTO KnowledgeProfile (student_id, concept_id, mastery_level) 
-            VALUES (@studentId, @conceptId, 0.2)`);
+          .query('SELECT name FROM Concepts WHERE id = @conceptId');
+        const topic = conceptNameResult.recordset.length > 0 ? conceptNameResult.recordset[0].name : 'General';
+
+        const existingMisc = await pool.request()
+          .input('studentId', sql.Int, req.userId)
+          .input('topic', sql.NVarChar, topic)
+          .query(`SELECT id FROM StudentMisconceptions
+                  WHERE student_id = @studentId AND topic = @topic AND resolved = 0`);
+
+        if (existingMisc.recordset.length > 0) {
+          await pool.request()
+            .input('id', sql.Int, existingMisc.recordset[0].id)
+            .query(`UPDATE StudentMisconceptions SET occurrences = occurrences + 1, last_detected = GETDATE(), updated_at = GETDATE() WHERE id = @id`);
+        } else {
+          await pool.request()
+            .input('studentId', sql.Int, req.userId)
+            .input('conceptId', sql.Int, conceptId)
+            .input('topic', sql.NVarChar, topic)
+            .input('misconception', sql.NVarChar, `Flashcard review incorrect for: ${topic}`)
+            .input('severity', sql.NVarChar, 'low')
+            .query(`
+              INSERT INTO StudentMisconceptions (student_id, concept_id, topic, misconception, severity)
+              VALUES (@studentId, @conceptId, @topic, @misconception, @severity)
+            `);
+        }
       }
     }
 
@@ -401,6 +432,63 @@ router.delete('/:id', authenticate, async (req, res) => {
   } catch (err) {
     console.error('Delete flashcard error:', err);
     res.status(500).json({ error: 'Delete failed' });
+  }
+});
+
+// ─── LEARNING LOOP: Study session complete — trigger pattern detection ───
+router.post('/session-complete', authenticate, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const studentId = req.userId;
+    const { correctCount, incorrectCount } = req.body || {};
+
+    // Auto-run pattern detection if enough study data
+    const countResult = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query('SELECT COUNT(*) as cnt FROM FlashcardProgress WHERE student_id = @studentId AND times_seen > 0');
+
+    if (countResult.recordset[0].cnt >= 10) {
+      // Store a study session pattern
+      const accuracy = correctCount && (correctCount + (incorrectCount || 0)) > 0
+        ? Math.round(correctCount / (correctCount + incorrectCount) * 100)
+        : null;
+
+      if (accuracy !== null) {
+        const existing = await pool.request()
+          .input('studentId', sql.Int, studentId)
+          .input('type', sql.NVarChar, 'study_session')
+          .query(`SELECT id FROM LearningPatterns
+                  WHERE student_id = @studentId AND pattern_type = @type AND active = 1`);
+
+        const patternText = accuracy >= 80
+          ? `Flashcard study session: ${accuracy}% accuracy. Strong recall — try harder cards.`
+          : accuracy >= 50
+          ? `Flashcard study session: ${accuracy}% accuracy. Mixed results — review weak areas.`
+          : `Flashcard study session: ${accuracy}% accuracy. Significant review needed.`;
+
+        if (existing.recordset.length > 0) {
+          await pool.request()
+            .input('id', sql.Int, existing.recordset[0].id)
+            .input('text', sql.NVarChar, patternText)
+            .input('confidence', sql.Float, 0.7)
+            .query(`UPDATE LearningPatterns SET pattern_text = @text, confidence = @confidence,
+                    evidence_count = evidence_count + 1, last_detected = GETDATE(), updated_at = GETDATE()
+                    WHERE id = @id`);
+        } else {
+          await pool.request()
+            .input('studentId', sql.Int, studentId)
+            .input('text', sql.NVarChar, patternText)
+            .input('confidence', sql.Float, 0.7)
+            .query(`INSERT INTO LearningPatterns (student_id, pattern_type, pattern_text, confidence)
+                    VALUES (@studentId, 'study_session', @text, @confidence)`);
+        }
+      }
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Session complete error:', err);
+    res.status(500).json({ error: 'Failed to record session' });
   }
 });
 

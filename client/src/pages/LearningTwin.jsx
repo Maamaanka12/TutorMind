@@ -177,6 +177,7 @@ export default function LearningTwin() {
           { id: 'overview', label: 'Overview', icon: BarChart3 },
           { id: 'misconceptions', label: 'Misconceptions', icon: AlertTriangle, badge: data.misconceptions.length },
           { id: 'patterns', label: 'Patterns', icon: Activity },
+          { id: 'loop', label: 'Learning Loop', icon: Zap },
           { id: 'actions', label: 'Actions', icon: Target },
         ].map(tab => (
           <button
@@ -359,6 +360,11 @@ export default function LearningTwin() {
         </div>
       )}
 
+      {/* Learning Loop Tab */}
+      {activeTab === 'loop' && (
+        <LearningLoopTab user={user} navigate={navigate} />
+      )}
+
       {/* Actions Tab */}
       {activeTab === 'actions' && (
         <div className="space-y-4">
@@ -454,6 +460,176 @@ function MiniStat({ icon: Icon, label, value, sub, color }) {
       <p className="text-xl font-display font-bold text-primary-900 dark:text-primary-100">{value}</p>
       <p className="text-xs text-primary-500 dark:text-primary-400 font-semibold">{label}</p>
       {sub && <p className="text-xs text-primary-400 dark:text-primary-500 mt-0.5">{sub}</p>}
+    </div>
+  );
+}
+
+// ─── Learning Loop Tab Component ──────────────────────────
+function LearningLoopTab({ user, navigate }) {
+  const { dark } = useTheme();
+  const [cycleData, setCycleData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+
+  useEffect(() => { loadCycle(); }, []);
+
+  const loadCycle = async () => {
+    try {
+      const data = await api.getLearningCycle();
+      setCycleData(data);
+    } catch (err) {
+      console.error('Failed to load cycle:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      await api.syncLearningTwin();
+      await loadCycle();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  if (loading) {
+    return <div className="flex justify-center py-12"><Loader2 className="animate-spin text-primary-500" size={24} /></div>;
+  }
+
+  if (!cycleData) {
+    return (
+      <div className="bg-white dark:bg-primary-900 rounded-clay p-8 border-2 border-primary-200 dark:border-primary-700 text-center">
+        <Zap size={40} className="mx-auto text-primary-300 dark:text-primary-600 mb-3" />
+        <h3 className="font-display font-bold text-primary-900 dark:text-primary-100 mb-1">No Learning Data Yet</h3>
+        <p className="text-primary-500 dark:text-primary-400 text-sm">Start studying to activate the learning loop!</p>
+      </div>
+    );
+  }
+
+  const { study, practice, mistakes, understanding, twin, adaptation, loopHealth } = cycleData;
+
+  return (
+    <div className="space-y-6">
+      {/* Loop Health Overview */}
+      <div className="bg-white dark:bg-primary-900 rounded-clay p-6 border-2 border-primary-200 dark:border-primary-700" style={{ boxShadow: dark ? '4px 4px 0 0 #312E81' : '4px 4px 0 0 #C7D2FE' }}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-display font-bold text-primary-900 dark:text-primary-100 flex items-center gap-2">
+            <Zap size={20} className="text-primary-500" /> Learning Loop Status
+          </h3>
+          <button onClick={handleSync} disabled={syncing} className="flex items-center gap-1.5 px-3 py-1.5 rounded-clay border-2 border-primary-200 dark:border-primary-700 text-xs font-semibold text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-800 transition-colors disabled:opacity-50">
+            {syncing ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Sync
+          </button>
+        </div>
+
+        <p className="text-sm text-primary-500 dark:text-primary-400 mb-4">
+          Your learning data flows through a continuous loop: Study → Practice → Make Mistakes → Understand Why → Update Twin → Adapt → Improve.
+        </p>
+
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          {loopHealth.steps.map((step, i) => (
+            <div key={i} className={`flex items-center gap-3 p-3 rounded-clay border-2 transition-all ${
+              step.done
+                ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
+                : 'bg-primary-50 dark:bg-primary-800/30 border-primary-200 dark:border-primary-700 opacity-60'
+            }`}>
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 ${
+                step.done ? 'bg-green-500 text-white' : 'bg-primary-200 dark:bg-primary-700 text-primary-500'
+              }`}>
+                {step.done ? <CheckCircle2 size={14} /> : i + 1}
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-primary-800 dark:text-primary-200">{step.name}</p>
+                <p className="text-xs text-primary-400 dark:text-primary-500 truncate">{step.detail}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-4 flex items-center gap-3">
+          <div className="flex-1 h-3 bg-primary-200 dark:bg-primary-700 rounded-full overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-primary-500 to-green-500 rounded-full transition-all duration-500" style={{ width: `${loopHealth.percentage}%` }} />
+          </div>
+          <span className="text-sm font-bold text-primary-600 dark:text-primary-400" style={{ fontVariantNumeric: 'tabular-nums' }}>{loopHealth.percentage}%</span>
+        </div>
+      </div>
+
+      {/* Detailed Stats */}
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="bg-white dark:bg-primary-900 rounded-clay p-5 border-2 border-primary-200 dark:border-primary-700">
+          <h4 className="font-display font-bold text-primary-900 dark:text-primary-100 mb-3 flex items-center gap-2">
+            <BookOpen size={16} className="text-green-500" /> Study Phase
+          </h4>
+          <div className="space-y-2">
+            <div className="flex justify-between text-sm"><span className="text-primary-500">Materials uploaded</span><span className="font-bold text-primary-800 dark:text-primary-200">{study.materialsUploaded}</span></div>
+            <div className="flex justify-between text-sm"><span className="text-primary-500">Flashcards created</span><span className="font-bold text-primary-800 dark:text-primary-200">{study.flashcardsStudied}</span></div>
+            <div className="flex justify-between text-sm"><span className="text-primary-500">Cards reviewed</span><span className="font-bold text-primary-800 dark:text-primary-200">{study.flashcardsReviewed}</span></div>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-primary-900 rounded-clay p-5 border-2 border-primary-200 dark:border-primary-700">
+          <h4 className="font-display font-bold text-primary-900 dark:text-primary-100 mb-3 flex items-center gap-2">
+            <Flame size={16} className="text-red-500" /> Practice Phase
+          </h4>
+          <div className="space-y-2">
+            <div className="flex justify-between text-sm"><span className="text-primary-500">Exams taken</span><span className="font-bold text-primary-800 dark:text-primary-200">{practice.examsTaken}</span></div>
+            <div className="flex justify-between text-sm"><span className="text-primary-500">Avg exam score</span><span className="font-bold text-primary-800 dark:text-primary-200">{practice.avgExamScore}%</span></div>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-primary-900 rounded-clay p-5 border-2 border-primary-200 dark:border-primary-700">
+          <h4 className="font-display font-bold text-primary-900 dark:text-primary-100 mb-3 flex items-center gap-2">
+            <AlertTriangle size={16} className="text-yellow-500" /> Mistakes & Understanding
+          </h4>
+          <div className="space-y-2">
+            <div className="flex justify-between text-sm"><span className="text-primary-500">Active misconceptions</span><span className="font-bold text-red-500 dark:text-red-400">{mistakes.activeMisconceptions}</span></div>
+            <div className="flex justify-between text-sm"><span className="text-primary-500">Resolved misconceptions</span><span className="font-bold text-green-500 dark:text-green-400">{mistakes.resolvedMisconceptions}</span></div>
+            <div className="flex justify-between text-sm"><span className="text-primary-500">Why Engine sessions</span><span className="font-bold text-primary-800 dark:text-primary-200">{understanding.whyEngineSessions}</span></div>
+            <div className="flex justify-between text-sm"><span className="text-primary-500">Sessions resolved</span><span className="font-bold text-green-500 dark:text-green-400">{understanding.resolvedSessions}</span></div>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-primary-900 rounded-clay p-5 border-2 border-primary-200 dark:border-primary-700">
+          <h4 className="font-display font-bold text-primary-900 dark:text-primary-100 mb-3 flex items-center gap-2">
+            <Brain size={16} className="text-purple-500" /> Adaptation
+          </h4>
+          <div className="space-y-2">
+            <div className="flex justify-between text-sm"><span className="text-primary-500">Overall mastery</span><span className="font-bold text-primary-800 dark:text-primary-200">{twin.overallMastery}%</span></div>
+            <div className="flex justify-between text-sm"><span className="text-primary-500">Patterns detected</span><span className="font-bold text-primary-800 dark:text-primary-200">{twin.patternsDetected}</span></div>
+            {adaptation.examTrend !== 0 && (
+              <div className="flex justify-between text-sm">
+                <span className="text-primary-500">Performance trend</span>
+                <span className={`font-bold ${adaptation.examTrend > 0 ? 'text-green-500' : 'text-red-500'}`}>
+                  {adaptation.examTrend > 0 ? '+' : ''}{adaptation.examTrend}%
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Exam History Trend */}
+      {adaptation.recentExams.length > 1 && (
+        <div className="bg-white dark:bg-primary-900 rounded-clay p-5 border-2 border-primary-200 dark:border-primary-700">
+          <h4 className="font-display font-bold text-primary-900 dark:text-primary-100 mb-3 flex items-center gap-2">
+            <TrendingUp size={16} className="text-blue-500" /> Exam Score Trend
+          </h4>
+          <div className="flex items-end gap-2 h-24">
+            {adaptation.recentExams.map((exam, i) => (
+              <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                <span className="text-xs font-bold text-primary-600 dark:text-primary-400">{exam.percentage}%</span>
+                <div className={`w-full rounded-t transition-all ${
+                  exam.percentage >= 70 ? 'bg-green-400' : exam.percentage >= 50 ? 'bg-yellow-400' : 'bg-red-400'
+                }`} style={{ height: `${Math.max(exam.percentage * 0.8, 8)}px` }} />
+                <span className="text-[10px] text-primary-400">{new Date(exam.date).toLocaleDateString()}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

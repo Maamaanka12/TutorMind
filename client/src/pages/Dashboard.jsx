@@ -17,18 +17,20 @@ export default function Dashboard() {
   const [flashcardStats, setFlashcardStats] = useState(null);
   const [examHistory, setExamHistory] = useState([]);
   const [twinData, setTwinData] = useState(null);
+  const [cycleData, setCycleData] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       try {
-        const [p, m, mat, fc, exams, twin] = await Promise.allSettled([
+        const [p, m, mat, fc, exams, twin, cycle] = await Promise.allSettled([
           api.getProfile(),
           api.getMisconceptions(),
           api.getMaterials(),
           api.getFlashcardStats(),
           api.getExamHistory(),
           api.getLearningTwin(),
+          api.getLearningCycle(),
         ]);
         if (p.status === 'fulfilled') setProfile(p.value);
         if (m.status === 'fulfilled') setMisconceptions(m.value);
@@ -36,6 +38,7 @@ export default function Dashboard() {
         if (fc.status === 'fulfilled') setFlashcardStats(fc.value);
         if (exams.status === 'fulfilled') setExamHistory(exams.value.filter(e => e.status === 'completed'));
         if (twin.status === 'fulfilled') setTwinData(twin.value);
+        if (cycle.status === 'fulfilled') setCycleData(cycle.value);
       } catch (err) {
         console.error(err);
       } finally {
@@ -112,6 +115,49 @@ export default function Dashboard() {
           </Link>
         </div>
       </div>
+
+      {/* ─── LEARNING LOOP: Study → Practice → Mistakes → Understand → Adapt ─── */}
+      {cycleData && cycleData.loopHealth && (
+        <div className="clay-card p-6 border-2 border-primary-200 dark:border-primary-700 mb-8 animate-slide-up" style={{ boxShadow: dark ? '4px 4px 0 0 #312E81' : '4px 4px 0 0 #C7D2FE' }}>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-display font-bold text-lg text-primary-900 dark:text-primary-100 flex items-center gap-2">
+              <Zap size={18} className="text-primary-500" /> Learning Loop
+              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-primary-100 dark:bg-primary-800 text-primary-600 dark:text-primary-400">
+                {cycleData.loopHealth.percentage}% complete
+              </span>
+            </h2>
+            <button
+              onClick={async () => { try { await api.syncLearningTwin(); loadData(); } catch(e) { console.error(e); } }}
+              className="text-xs font-semibold text-primary-500 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-200 flex items-center gap-1"
+            >
+              <RefreshCw size={12} /> Sync
+            </button>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            {cycleData.loopHealth.steps.map((step, i) => (
+              <div key={i} className={`text-center p-3 rounded-clay border-2 transition-all ${
+                step.done
+                  ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
+                  : 'bg-primary-50 dark:bg-primary-800/30 border-primary-200 dark:border-primary-700 opacity-70'
+              }`}>
+                <div className={`w-8 h-8 rounded-full mx-auto mb-2 flex items-center justify-center text-sm font-bold ${
+                  step.done ? 'bg-green-500 text-white' : 'bg-primary-200 dark:bg-primary-700 text-primary-500 dark:text-primary-400'
+                }`}>
+                  {i + 1}
+                </div>
+                <p className="text-xs font-bold text-primary-800 dark:text-primary-200 mb-0.5">{step.name}</p>
+                <p className="text-[10px] text-primary-400 dark:text-primary-500 leading-tight">{step.detail}</p>
+              </div>
+            ))}
+          </div>
+          {cycleData.adaptation.examTrend !== 0 && (
+            <div className={`mt-4 flex items-center gap-2 text-sm font-semibold ${cycleData.adaptation.examTrend > 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400'}`}>
+              <TrendingUp size={14} className={cycleData.adaptation.examTrend < 0 ? 'rotate-180' : ''} />
+              Exam performance trend: {cycleData.adaptation.examTrend > 0 ? '+' : ''}{cycleData.adaptation.examTrend}%
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Quick Actions */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">

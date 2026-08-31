@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { generateStructured } from '../services/aiService.js';
-import { examGeneration, examAnalysis } from '../services/prompts.js';
+import { examGeneration, examAnalysis, misconceptionDetection } from '../services/prompts.js';
 import { parseJSONObject } from '../utils/aiHelper.js';
 import { parseId, clampInt, sanitizeString, rateLimit } from '../utils/validate.js';
 import 'dotenv/config';
@@ -380,12 +380,49 @@ router.post('/:id/submit', authenticate, async (req, res) => {
       }
     }
 
+    // ─── LEARNING LOOP: Auto-analyze wrong answers via Why Engine ───
+    const wrongAnswers = [];
+    for (const question of questionsResult.recordset) {
+      const studentAnswer = answers[question.id]?.student_answer || '';
+      const correct = question.correct_answer.toLowerCase().trim();
+      const student = studentAnswer.toLowerCase().trim();
+      let isCorrect = student === correct;
+      if (!isCorrect && question.question_type === 'true_false') {
+        isCorrect = (student === 'true' && correct.includes('true')) ||
+                    (student === 'false' && correct.includes('false'));
+      }
+      if (!isCorrect) {
+        wrongAnswers.push({
+          questionId: question.id,
+          questionText: question.question_text,
+          options: question.options,
+          correctAnswer: question.correct_answer,
+          studentAnswer: studentAnswer,
+          conceptName: question.concept_name || null,
+        });
+      }
+    }
+
+    // Fire-and-forget: analyze wrong answers asynchronously
+    if (wrongAnswers.length > 0) {
+      analyzeWrongAnswersBackground(req.userId, wrongAnswers, pool).catch(err =>
+        console.error('Background Why Engine analysis failed:', err.message)
+      );
+    }
+
+    // ─── LEARNING LOOP: Auto-detect patterns after exam ───
+    detectPatternsBackground(req.userId, pool).catch(err =>
+      console.error('Background pattern detection failed:', err.message)
+    );
+
     res.json({
       score,
       total: totalQuestions,
       percentage,
       conceptResults,
       analysis,
+      wrongAnswersCount: wrongAnswers.length,
+      learningLoopTriggered: wrongAnswers.length > 0,
     });
   } catch (err) {
     console.error('Submit exam error:', err);
@@ -413,5 +450,222 @@ router.get('/', authenticate, async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
+
+// ═══════════════════════════════════════════════════════════════
+// LEARNING LOOP: Background functions for Why Engine integration
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Analyze wrong exam answers through the Why Engine in the background.
+ * Stores misconceptions in StudentMisconceptions and sessions in WhyEngineSessions.
+ */
+async function analyzeWrongAnswersBackground(studentId, wrongAnswers, pool) {
+  // Analyze up to 5 wrong answers to avoid AI overload
+  const toAnalyze = wrongAnswers.slice(0, 5);
+
+  for (const wa of toAnalyze) {
+    try {
+      // Find concept_id if conceptName is available
+      let conceptId = null;
+      if (wa.conceptName) {
+        const conceptResult = await pool.request()
+          .input('name', sql.NVarChar, wa.conceptName)
+          .input('studentId', sql.Int, studentId)
+          .query(`SELECT c.id FROM Concepts c 
+                  JOIN Materials m ON c.material_id = m.id 
+                  WHERE c.name LIKE @name AND m.student_id = @studentId`);
+        if (conceptResult.recordset.length > 0) {
+          conceptId = conceptResult.recordset[0].id;
+        }
+      }
+
+      // Get existing misconceptions for this concept
+      let existingMisconceptions = [];
+      if (conceptId) {
+        const miscResult = await pool.request()
+          .input('conceptId', sql.Int, conceptId)
+          .input('studentId', sql.Int, studentId)
+          .query('SELECT c.name FROM Concepts c WHERE c.id = @conceptId');
+        if (miscResult.recordset.length > 0) {
+          const topic = miscResult.recordset[0].name;
+          const existing = await pool.request()
+            .input('studentId', sql.Int, studentId)
+            .input('topic', sql.NVarChar, topic)
+            .query(`SELECT misconception, severity, occurrences
+                    FROM StudentMisconceptions
+                    WHERE student_id = @studentId AND topic = @topic AND resolved = 0`);
+          existingMisconceptions = existing.recordset;
+        }
+      }
+
+      const prompt = misconceptionDetection({
+        questionText: wa.questionText,
+        options: wa.options,
+        correctAnswer: wa.correctAnswer,
+        studentAnswer: wa.studentAnswer,
+        existingMisconceptions,
+        masteryContext: '',
+      });
+
+      const { data: analysis } = await generateStructured(prompt, { maxRetries: 1 });
+      if (!analysis) continue;
+
+      // Store misconception
+      let misconceptionId = null;
+      const topic = wa.conceptName || 'Exam Topic';
+      const existingMisc = await pool.request()
+        .input('studentId', sql.Int, studentId)
+        .input('topic', sql.NVarChar, topic)
+        .query(`SELECT id FROM StudentMisconceptions
+                WHERE student_id = @studentId AND topic = @topic AND resolved = 0
+                ORDER BY occurrences DESC`);
+
+      if (existingMisc.recordset.length > 0) {
+        misconceptionId = existingMisc.recordset[0].id;
+        await pool.request()
+          .input('id', sql.Int, misconceptionId)
+          .query(`UPDATE StudentMisconceptions 
+                  SET occurrences = occurrences + 1, last_detected = GETDATE(), updated_at = GETDATE()
+                  WHERE id = @id`);
+      } else {
+        const insertResult = await pool.request()
+          .input('studentId', sql.Int, studentId)
+          .input('conceptId', sql.Int, conceptId)
+          .input('topic', sql.NVarChar, topic)
+          .input('misconception', sql.NVarChar, analysis.misconception)
+          .input('severity', sql.NVarChar, analysis.confidence === 'high' ? 'high' : analysis.confidence === 'medium' ? 'medium' : 'low')
+          .query(`
+            INSERT INTO StudentMisconceptions (student_id, concept_id, topic, misconception, severity)
+            OUTPUT INSERTED.id
+            VALUES (@studentId, @conceptId, @topic, @misconception, @severity)
+          `);
+        misconceptionId = insertResult.recordset[0].id;
+      }
+
+      // Create Why Engine session
+      await pool.request()
+        .input('studentId', sql.Int, studentId)
+        .input('misconceptionId', sql.Int, misconceptionId)
+        .input('originalQuestion', sql.NVarChar, wa.questionText)
+        .input('studentAnswer', sql.NVarChar, wa.studentAnswer)
+        .input('correctAnswer', sql.NVarChar, wa.correctAnswer)
+        .input('topic', sql.NVarChar, topic)
+        .input('identifiedMisconception', sql.NVarChar, analysis.misconception)
+        .input('confidence', sql.NVarChar, analysis.confidence)
+        .input('explanation', sql.NVarChar, analysis.explanation)
+        .input('followUpQuestion', sql.NVarChar, analysis.followUpQuestion)
+        .input('followUpOptions', sql.NVarChar, JSON.stringify(analysis.followUpOptions))
+        .input('followUpCorrectAnswer', sql.NVarChar, analysis.followUpCorrectAnswer)
+        .query(`
+          INSERT INTO WhyEngineSessions 
+            (student_id, misconception_id, original_question, student_answer, correct_answer,
+             topic, identified_misconception, confidence, explanation,
+             follow_up_question, follow_up_options, follow_up_correct_answer)
+          VALUES (@studentId, @misconceptionId, @originalQuestion, @studentAnswer, @correctAnswer,
+                  @topic, @identifiedMisconception, @confidence, @explanation,
+                  @followUpQuestion, @followUpOptions, @followUpCorrectAnswer)
+        `);
+
+      // Reduce mastery for the concept
+      if (conceptId) {
+        await pool.request()
+          .input('studentId', sql.Int, studentId)
+          .input('conceptId', sql.Int, conceptId)
+          .input('misconception', sql.NVarChar, analysis.misconception)
+          .query(`
+            IF EXISTS (SELECT 1 FROM KnowledgeProfile WHERE student_id = @studentId AND concept_id = @conceptId)
+              UPDATE KnowledgeProfile SET mastery_level = CASE WHEN mastery_level - 0.1 < 0 THEN 0 ELSE mastery_level - 0.1 END,
+                misconceptions = @misconception, updated_at = GETDATE()
+              WHERE student_id = @studentId AND concept_id = @conceptId
+            ELSE
+              INSERT INTO KnowledgeProfile (student_id, concept_id, mastery_level, misconceptions)
+              VALUES (@studentId, @conceptId, 0.2, @misconception)
+          `);
+      }
+    } catch (err) {
+      // Don't let one failure block others
+      console.error(`Why Engine analysis failed for question ${wa.questionId}:`, err.message);
+    }
+  }
+}
+
+/**
+ * Auto-detect learning patterns after exam completion.
+ */
+async function detectPatternsBackground(studentId, pool) {
+  try {
+    // Check if enough data exists
+    const countResult = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query('SELECT COUNT(*) as cnt FROM Answers WHERE student_id = @studentId');
+
+    if (countResult.recordset[0].cnt < 5) return;
+
+    // Get recent data
+    const [answersResult, flashcardResult, examResult] = await Promise.all([
+      pool.request()
+        .input('studentId', sql.Int, studentId)
+        .query(`SELECT TOP 20 a.is_correct, a.misconception, q.question_text, q.options,
+                       q.correct_answer, q.difficulty_level, c.name as concept_name
+                FROM Answers a
+                JOIN Questions q ON a.question_id = q.id
+                JOIN Concepts c ON q.concept_id = c.id
+                WHERE a.student_id = @studentId
+                ORDER BY a.created_at DESC`),
+      pool.request()
+        .input('studentId', sql.Int, studentId)
+        .query(`SELECT TOP 10 fp.times_correct, fp.times_incorrect, fp.mastery_level, f.card_type
+                FROM FlashcardProgress fp
+                JOIN Flashcards f ON fp.flashcard_id = f.id
+                WHERE fp.student_id = @studentId AND fp.times_seen > 0`),
+      pool.request()
+        .input('studentId', sql.Int, studentId)
+        .query(`SELECT TOP 5 e.percentage, ea.time_spent_seconds, eq.question_type
+                FROM Exams e
+                JOIN ExamAnswers ea ON e.id = ea.exam_id AND ea.student_id = @studentId
+                JOIN ExamQuestions eq ON ea.question_id = eq.id
+                WHERE e.student_id = @studentId AND e.status = 'completed'`),
+    ]);
+
+    // Build a minimal context and store a system-detected pattern
+    const avgAccuracy = answersResult.recordset.length > 0
+      ? answersResult.recordset.filter(a => a.is_correct).length / answersResult.recordset.length
+      : 0;
+    const recentExamAvg = examResult.recordset.length > 0
+      ? examResult.recordset.reduce((s, e) => s + e.percentage, 0) / examResult.recordset.length
+      : 0;
+
+    if (recentExamAvg > 0) {
+      const patternText = recentExamAvg >= 70
+        ? `Exam performance is strong (${Math.round(recentExamAvg)}% average). Keep challenging with harder material.`
+        : `Exam performance needs improvement (${Math.round(recentExamAvg)}% average). Review weak topics.`;
+
+      const existing = await pool.request()
+        .input('studentId', sql.Int, studentId)
+        .input('type', sql.NVarChar, 'exam_performance')
+        .query(`SELECT id FROM LearningPatterns
+                WHERE student_id = @studentId AND pattern_type = @type AND active = 1`);
+
+      if (existing.recordset.length > 0) {
+        await pool.request()
+          .input('id', sql.Int, existing.recordset[0].id)
+          .input('text', sql.NVarChar, patternText)
+          .input('confidence', sql.Float, 0.8)
+          .query(`UPDATE LearningPatterns SET pattern_text = @text, confidence = @confidence,
+                  evidence_count = evidence_count + 1, last_detected = GETDATE(), updated_at = GETDATE()
+                  WHERE id = @id`);
+      } else {
+        await pool.request()
+          .input('studentId', sql.Int, studentId)
+          .input('text', sql.NVarChar, patternText)
+          .input('confidence', sql.Float, 0.8)
+          .query(`INSERT INTO LearningPatterns (student_id, pattern_type, pattern_text, confidence)
+                  VALUES (@studentId, 'exam_performance', @text, @confidence)`);
+      }
+    }
+  } catch (err) {
+    console.error('Background pattern detection error:', err.message);
+  }
+}
 
 export default router;

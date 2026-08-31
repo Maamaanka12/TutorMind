@@ -527,6 +527,285 @@ router.get('/recommendations', authenticate, async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════
+// LEARNING LOOP: Sync Learning Twin with all activity data
+// ═══════════════════════════════════════════════════════════════
+router.post('/sync', authenticate, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const studentId = req.userId;
+
+    // 1. Update mastery from recent activity
+    const recentAnswers = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query(`SELECT TOP 20 a.is_correct, c.id as concept_id, c.name as concept_name
+              FROM Answers a
+              JOIN Questions q ON a.question_id = q.id
+              JOIN Concepts c ON q.concept_id = c.id
+              WHERE a.student_id = @studentId
+              ORDER BY a.created_at DESC`);
+
+    const conceptPerformance = {};
+    for (const a of recentAnswers.recordset) {
+      if (!a.concept_id) continue;
+      if (!conceptPerformance[a.concept_id]) conceptPerformance[a.concept_id] = { correct: 0, total: 0, name: a.concept_name };
+      conceptPerformance[a.concept_id].total++;
+      if (a.is_correct) conceptPerformance[a.concept_id].correct++;
+    }
+
+    // Sync KnowledgeProfile with exam-based mastery
+    for (const [conceptId, perf] of Object.entries(conceptPerformance)) {
+      const mastery = perf.total > 0 ? perf.correct / perf.total : 0.5;
+      await pool.request()
+        .input('studentId', sql.Int, studentId)
+        .input('conceptId', sql.Int, parseInt(conceptId))
+        .input('mastery', sql.Float, mastery)
+        .query(`IF EXISTS (SELECT 1 FROM KnowledgeProfile WHERE student_id = @studentId AND concept_id = @conceptId)
+          UPDATE KnowledgeProfile SET mastery_level = @mastery, last_assessed = GETDATE(), updated_at = GETDATE()
+          WHERE student_id = @studentId AND concept_id = @conceptId
+        ELSE
+          INSERT INTO KnowledgeProfile (student_id, concept_id, mastery_level, last_assessed)
+          VALUES (@studentId, @conceptId, @mastery, GETDATE())`);
+    }
+
+    // 2. Auto-detect patterns if enough data
+    const answerCount = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query('SELECT COUNT(*) as cnt FROM Answers WHERE student_id = @studentId');
+
+    let patternsDetected = 0;
+    if (answerCount.recordset[0].cnt >= 5) {
+      const pattern = await pool.request()
+        .input('studentId', sql.Int, studentId)
+        .query(`SELECT TOP 10 a.is_correct, c.name as concept_name
+                FROM Answers a
+                JOIN Questions q ON a.question_id = q.id
+                JOIN Concepts c ON q.concept_id = c.id
+                WHERE a.student_id = @studentId
+                ORDER BY a.created_at DESC`);
+
+      if (pattern.recordset.length >= 5) {
+        const accuracy = pattern.recordset.filter(a => a.is_correct).length / pattern.recordset.length;
+        const topicPerf = {};
+        pattern.recordset.forEach(a => {
+          if (!topicPerf[a.concept_name]) topicPerf[a.concept_name] = { correct: 0, total: 0 };
+          topicPerf[a.concept_name].total++;
+          if (a.is_correct) topicPerf[a.concept_name].correct++;
+        });
+
+        const weakTopics = Object.entries(topicPerf)
+          .filter(([, d]) => d.correct / d.total < 0.5)
+          .map(([name]) => name);
+
+        const patternText = weakTopics.length > 0
+          ? `Struggling with: ${weakTopics.join(', ')}. Recent accuracy: ${Math.round(accuracy * 100)}%`
+          : `Recent accuracy: ${Math.round(accuracy * 100)}%. Performance is ${accuracy >= 0.7 ? 'strong' : 'developing'}`;
+
+        const existing = await pool.request()
+          .input('studentId', sql.Int, studentId)
+          .input('type', sql.NVarChar, 'activity_sync')
+          .query(`SELECT id FROM LearningPatterns
+                  WHERE student_id = @studentId AND pattern_type = @type AND active = 1`);
+
+        if (existing.recordset.length > 0) {
+          await pool.request()
+            .input('id', sql.Int, existing.recordset[0].id)
+            .input('text', sql.NVarChar, patternText)
+            .input('confidence', sql.Float, 0.75)
+            .query(`UPDATE LearningPatterns SET pattern_text = @text, confidence = @confidence,
+                    evidence_count = evidence_count + 1, last_detected = GETDATE(), updated_at = GETDATE()
+                    WHERE id = @id`);
+        } else {
+          await pool.request()
+            .input('studentId', sql.Int, studentId)
+            .input('text', sql.NVarChar, patternText)
+            .input('confidence', sql.Float, 0.75)
+            .query(`INSERT INTO LearningPatterns (student_id, pattern_type, pattern_text, confidence)
+                    VALUES (@studentId, 'activity_sync', @text, @confidence)`);
+        }
+        patternsDetected++;
+      }
+    }
+
+    // 3. Get updated recommendations
+    const [topicsResult, misconceptionsResult, flashcardResult, examResult] = await Promise.all([
+      pool.request()
+        .input('studentId', sql.Int, studentId)
+        .query(`SELECT c.name, kp.mastery_level
+                FROM KnowledgeProfile kp
+                JOIN Concepts c ON kp.concept_id = c.id
+                WHERE kp.student_id = @studentId ORDER BY kp.mastery_level ASC`),
+      pool.request()
+        .input('studentId', sql.Int, studentId)
+        .query(`SELECT topic, misconception, severity, occurrences
+                FROM StudentMisconceptions WHERE student_id = @studentId AND resolved = 0`),
+      pool.request()
+        .input('studentId', sql.Int, studentId)
+        .query(`SELECT COUNT(*) as due FROM Flashcards f
+                LEFT JOIN FlashcardProgress fp ON f.id = fp.flashcard_id AND fp.student_id = f.student_id
+                WHERE f.student_id = @studentId AND (fp.next_review <= GETDATE() OR fp.next_review IS NULL)`),
+      pool.request()
+        .input('studentId', sql.Int, studentId)
+        .query(`SELECT TOP 3 title, percentage FROM Exams
+                WHERE student_id = @studentId AND status = 'completed' ORDER BY submitted_at DESC`),
+    ]);
+
+    const topics = topicsResult.recordset;
+    const weakTopics = topics.filter(t => t.mastery_level < 0.5);
+    const reviewTopics = topics.filter(t => t.mastery_level >= 0.5 && t.mastery_level < 0.7);
+
+    const recommendations = [];
+    if (weakTopics.length > 0) {
+      recommendations.push({ type: 'review', priority: 'high', text: `Focus on: ${weakTopics.slice(0, 3).map(t => t.name).join(', ')}`, detail: 'These topics need attention' });
+    }
+    if (flashcardResult.recordset[0].due > 0) {
+      recommendations.push({ type: 'flashcards', priority: 'medium', text: `${flashcardResult.recordset[0].due} flashcards due`, detail: 'Spaced repetition review' });
+    }
+    if (misconceptionsResult.recordset.length > 0) {
+      const severe = misconceptionsResult.recordset.filter(m => m.severity === 'high');
+      if (severe.length > 0) {
+        recommendations.push({ type: 'misconception', priority: 'high', text: `Address: ${severe[0].topic}`, detail: severe[0].misconception });
+      }
+    }
+    if (reviewTopics.length > 0) {
+      recommendations.push({ type: 'practice', priority: 'medium', text: `Strengthen: ${reviewTopics.slice(0, 3).map(t => t.name).join(', ')}`, detail: 'Close to mastery' });
+    }
+
+    res.json({
+      synced: true,
+      patternsDetected,
+      conceptsUpdated: Object.keys(conceptPerformance).length,
+      recommendations: recommendations.slice(0, 5),
+    });
+  } catch (err) {
+    console.error('Learning twin sync error:', err);
+    res.status(500).json({ error: 'Sync failed' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// LEARNING LOOP: Get the full learning cycle data
+// ═══════════════════════════════════════════════════════════════
+router.get('/cycle', authenticate, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const studentId = req.userId;
+
+    // 1. Study activity (materials, flashcards studied)
+    const materialsResult = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query(`SELECT COUNT(*) as count FROM Materials WHERE student_id = @studentId`);
+
+    const flashcardActivityResult = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query(`SELECT COUNT(DISTINCT f.id) as studied, COUNT(DISTINCT fp.flashcard_id) as reviewed
+              FROM Flashcards f
+              LEFT JOIN FlashcardProgress fp ON f.id = fp.flashcard_id AND fp.student_id = f.student_id
+              WHERE f.student_id = @studentId AND fp.last_reviewed IS NOT NULL`);
+
+    // 2. Practice (exams taken)
+    const examsResult = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query(`SELECT COUNT(*) as count, ISNULL(AVG(percentage), 0) as avg_score
+              FROM Exams WHERE student_id = @studentId AND status = 'completed'`);
+
+    // 3. Mistakes (misconceptions detected)
+    const misconceptionsResult = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query(`SELECT COUNT(*) as active, 
+              SUM(CASE WHEN resolved = 1 THEN 1 ELSE 0 END) as resolved
+              FROM StudentMisconceptions WHERE student_id = @studentId`);
+
+    // 4. Understanding (Why Engine investigations)
+    const whyResult = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query(`SELECT COUNT(*) as total, 
+              SUM(CASE WHEN resolved = 1 THEN 1 ELSE 0 END) as resolved
+              FROM WhyEngineSessions WHERE student_id = @studentId`);
+
+    // 5. Learning Twin (patterns, mastery)
+    const patternsResult = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query(`SELECT COUNT(*) as count FROM LearningPatterns WHERE student_id = @studentId AND active = 1`);
+
+    const masteryResult = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query(`SELECT ISNULL(AVG(mastery_level), 0) as avg_mastery
+              FROM KnowledgeProfile WHERE student_id = @studentId`);
+
+    // 6. Adaptation evidence (how learning has improved over time)
+    const recentExams = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query(`SELECT TOP 5 percentage, submitted_at
+              FROM Exams WHERE student_id = @studentId AND status = 'completed'
+              ORDER BY submitted_at ASC`);
+
+    const examTrend = recentExams.recordset.length >= 2
+      ? recentExams.recordset[recentExams.recordset.length - 1].percentage - recentExams.recordset[0].percentage
+      : 0;
+
+    res.json({
+      study: {
+        materialsUploaded: materialsResult.recordset[0].count,
+        flashcardsStudied: flashcardActivityResult.recordset[0].studied,
+        flashcardsReviewed: flashcardActivityResult.recordset[0].reviewed,
+      },
+      practice: {
+        examsTaken: examsResult.recordset[0].count,
+        avgExamScore: Math.round(examsResult.recordset[0].avg_score),
+      },
+      mistakes: {
+        activeMisconceptions: misconceptionsResult.recordset[0].active || 0,
+        resolvedMisconceptions: misconceptionsResult.recordset[0].resolved || 0,
+      },
+      understanding: {
+        whyEngineSessions: whyResult.recordset[0].total || 0,
+        resolvedSessions: whyResult.recordset[0].resolved || 0,
+      },
+      twin: {
+        patternsDetected: patternsResult.recordset[0].count,
+        overallMastery: Math.round(masteryResult.recordset[0].avg_mastery * 100),
+      },
+      adaptation: {
+        examTrend: Math.round(examTrend),
+        recentExams: recentExams.recordset.map(e => ({
+          percentage: Math.round(e.percentage),
+          date: e.submitted_at,
+        })),
+      },
+      loopHealth: calculateLoopHealth({
+        materialsCount: materialsResult.recordset[0].count,
+        examsTaken: examsResult.recordset[0].count,
+        misconceptionsActive: misconceptionsResult.recordset[0].active || 0,
+        whySessions: whyResult.recordset[0].total || 0,
+        patterns: patternsResult.recordset[0].count,
+      }),
+    });
+  } catch (err) {
+    console.error('Learning cycle error:', err);
+    res.status(500).json({ error: 'Failed to load learning cycle' });
+  }
+});
+
+function calculateLoopHealth({ materialsCount, examsTaken, misconceptionsActive, whySessions, patterns }) {
+  const steps = [
+    { name: 'Study', done: materialsCount > 0, detail: materialsCount > 0 ? `${materialsCount} materials uploaded` : 'Upload materials to start' },
+    { name: 'Practice', done: examsTaken > 0, detail: examsTaken > 0 ? `${examsTaken} exams taken` : 'Take an exam' },
+    { name: 'Make Mistakes', done: misconceptionsActive > 0 || examsTaken > 0, detail: misconceptionsActive > 0 ? `${misconceptionsActive} misconceptions found` : 'Mistakes surface during practice' },
+    { name: 'Understand Why', done: whySessions > 0, detail: whySessions > 0 ? `${whySessions} investigations completed` : 'Why Engine analyzes errors' },
+    { name: 'Update Twin', done: patterns > 0, detail: patterns > 0 ? `${patterns} patterns detected` : 'Twin evolves with activity' },
+    { name: 'Adapt & Improve', done: examsTaken >= 2, detail: examsTaken >= 2 ? 'Adaptation in progress' : 'Take more exams to adapt' },
+  ];
+
+  const completedSteps = steps.filter(s => s.done).length;
+  return {
+    steps,
+    completedSteps,
+    totalSteps: steps.length,
+    percentage: Math.round((completedSteps / steps.length) * 100),
+  };
+}
+
 function generateRecommendations({ topics, weakTopics, reviewTopics, misconceptions, flashcardStats, examStats, recentActivity }) {
   const recommendations = [];
 

@@ -7,7 +7,7 @@ import {
   Clock, AlertTriangle, ChevronLeft, ChevronRight, CheckCircle2,
   XCircle, Trophy, Target, TrendingUp, BookOpen, AlertCircle,
   FileText, Settings, Play, RotateCcw, Loader2, ArrowLeft, Flame,
-  BarChart3, Lightbulb
+  BarChart3, Lightbulb, Brain, Search
 } from 'lucide-react';
 
 export default function ExamMode() {
@@ -637,6 +637,37 @@ export default function ExamMode() {
                 </ul>
               </div>
             )}
+          </div>
+        )}
+
+        {/* LEARNING LOOP: Auto-analysis notification */}
+        {results.wrongAnswersCount > 0 && (
+          <div className="bg-blue-50 dark:bg-blue-900/20 rounded-clay p-5 border-2 border-blue-200 dark:border-blue-800 mb-6" style={{ boxShadow: dark ? '4px 4px 0 0 #1E3A5F' : '4px 4px 0 0 #BFDBFE' }}>
+            <div className="flex items-start gap-3">
+              <div className="bg-blue-100 dark:bg-blue-900/40 p-2 rounded-clay">
+                <Brain size={20} className="text-blue-600 dark:text-blue-400" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-display font-bold text-blue-800 dark:text-blue-200 mb-1">Learning Loop Activated</h3>
+                <p className="text-sm text-blue-600 dark:text-blue-300 mb-3">
+                  The Why Engine is analyzing your {results.wrongAnswersCount} wrong answer{results.wrongAnswersCount > 1 ? 's' : ''} to identify misconceptions and adapt future tutoring.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => navigate('/why-engine')}
+                    className="px-3 py-1.5 rounded-clay bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-xs font-semibold hover:bg-blue-200 dark:hover:bg-blue-900/60 transition-colors flex items-center gap-1"
+                  >
+                    <Search size={12} /> View Why Engine
+                  </button>
+                  <button
+                    onClick={() => navigate('/learning-twin')}
+                    className="px-3 py-1.5 rounded-clay bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-xs font-semibold hover:bg-blue-200 dark:hover:bg-blue-900/60 transition-colors flex items-center gap-1"
+                  >
+                    <Brain size={12} /> View Learning Twin
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
