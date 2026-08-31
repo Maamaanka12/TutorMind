@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
-import { callAI, parseJSONArray } from '../utils/aiHelper.js';
+import { generateStructured } from '../services/aiService.js';
+import { flashcardGeneration } from '../services/prompts.js';
+import { parseId, clampInt, sanitizeString, requireFields, rateLimit } from '../utils/validate.js';
 import 'dotenv/config';
 
 const router = Router();
@@ -10,11 +12,18 @@ const router = Router();
 router.post('/generate', authenticate, async (req, res) => {
   try {
     const { materialId, count = 10, difficulty } = req.body;
+
+    // Validate inputs
+    const matId = parseId(materialId);
+    if (!matId) return res.status(400).json({ error: 'Invalid materialId' });
+    const safeCount = clampInt(count, 1, 30, 10);
+    const safeDifficulty = difficulty ? clampInt(difficulty, 1, 5, undefined) : undefined;
+
     const pool = await getPool();
 
     // Get material
     const matResult = await pool.request()
-      .input('id', sql.Int, materialId)
+      .input('id', sql.Int, matId)
       .input('studentId', sql.Int, req.userId)
       .query('SELECT content, title FROM Materials WHERE id = @id AND student_id = @studentId');
 
@@ -23,36 +32,19 @@ router.post('/generate', authenticate, async (req, res) => {
     }
 
     const material = matResult.recordset[0];
-    const difficultyPrompt = difficulty ? `Difficulty level: ${difficulty}/5` : 'Vary difficulty levels between 1-5';
 
-    const prompt = `Generate ${count} high-quality flashcards from this educational material. 
-Focus on important concepts, definitions, formulas, and key relationships. 
-Avoid trivial or duplicate cards.
+    const prompt = flashcardGeneration({
+      title: material.title,
+      content: material.content,
+      count: safeCount,
+      difficulty: safeDifficulty,
+    });
 
-${difficultyPrompt}
-
-Material title: ${material.title}
-Material content:
-${material.content.substring(0, 10000)}
-
-Return a JSON array of objects with:
-- "front" (question or concept to learn)
-- "back" (answer or explanation)
-- "difficulty" (1-5 scale)
-- "cardType" (one of: "qa", "definition", "concept", "formula", "comparison")
-- "conceptName" (related concept name if applicable)
-
-Make cards genuinely useful for learning. Include a mix of question types.`;
-
-    const { text } = await callAI(prompt);
-    const cards = parseJSONArray(text);
-    if (!cards) {
-      return res.status(502).json({ error: 'AI could not generate flashcards. Please try again.', aiError: true, errorType: 'parse' });
-    }
+    const { data: cards } = await generateStructured(prompt);
 
     // Get concepts for linking
     const conceptsResult = await pool.request()
-      .input('materialId', sql.Int, materialId)
+      .input('materialId', sql.Int, matId)
       .query('SELECT id, name FROM Concepts WHERE material_id = @materialId');
     
     const concepts = conceptsResult.recordset;
@@ -70,11 +62,11 @@ Make cards genuinely useful for learning. Include a mix of question types.`;
 
       const insertResult = await pool.request()
         .input('studentId', sql.Int, req.userId)
-        .input('materialId', sql.Int, materialId)
+        .input('materialId', sql.Int, matId)
         .input('conceptId', sql.Int, conceptId)
-        .input('front', sql.NVarChar, card.front)
-        .input('back', sql.NVarChar, card.back)
-        .input('difficulty', sql.Int, card.difficulty || 1)
+        .input('front', sql.NVarChar, sanitizeString(card.front, 2000))
+        .input('back', sql.NVarChar, sanitizeString(card.back, 5000))
+        .input('difficulty', sql.Int, clampInt(card.difficulty, 1, 5, 1))
         .input('cardType', sql.NVarChar, card.cardType || 'qa')
         .query(`INSERT INTO Flashcards (student_id, material_id, concept_id, front, back, difficulty, card_type)
                 OUTPUT INSERTED.id, INSERTED.created_at
@@ -197,11 +189,12 @@ router.get('/stats', authenticate, async (req, res) => {
 router.get('/review', authenticate, async (req, res) => {
   try {
     const { limit = 20 } = req.query;
+    const safeLimit = clampInt(limit, 1, 50, 20);
     const pool = await getPool();
 
     const result = await pool.request()
       .input('studentId', sql.Int, req.userId)
-      .input('limit', sql.Int, parseInt(limit))
+      .input('limit', sql.Int, safeLimit)
       .query(`
         SELECT TOP (@limit) f.*, fp.times_seen, fp.times_correct, fp.times_incorrect,
                fp.ease_factor, fp.interval_days, fp.mastery_level
@@ -225,14 +218,24 @@ router.get('/review', authenticate, async (req, res) => {
 // Update flashcard review (spaced repetition algorithm)
 router.post('/:id/review', authenticate, async (req, res) => {
   try {
-    const { id } = req.params;
-    const { correct } = req.body;
+    const flashcardId = parseId(req.params.id);
+    if (!flashcardId) return res.status(400).json({ error: 'Invalid flashcard ID' });
+    const correct = !!req.body.correct;
     const pool = await getPool();
+
+    // Verify card belongs to this student
+    const cardCheck = await pool.request()
+      .input('studentId', sql.Int, req.userId)
+      .input('flashcardId', sql.Int, flashcardId)
+      .query('SELECT id FROM Flashcards WHERE id = @flashcardId AND student_id = @studentId');
+    if (cardCheck.recordset.length === 0) {
+      return res.status(404).json({ error: 'Flashcard not found' });
+    }
 
     // Get current progress
     const progressResult = await pool.request()
       .input('studentId', sql.Int, req.userId)
-      .input('flashcardId', sql.Int, parseInt(id))
+      .input('flashcardId', sql.Int, flashcardId)
       .query('SELECT * FROM FlashcardProgress WHERE student_id = @studentId AND flashcard_id = @flashcardId');
 
     let progress = progressResult.recordset[0];
@@ -241,9 +244,11 @@ router.post('/:id/review', authenticate, async (req, res) => {
       // Initialize progress if not exists
       await pool.request()
         .input('studentId', sql.Int, req.userId)
-        .input('flashcardId', sql.Int, parseInt(id))
+        .input('flashcardId', sql.Int, flashcardId)
+        .input('timesCorrect', sql.Int, correct ? 1 : 0)
+        .input('timesIncorrect', sql.Int, correct ? 0 : 1)
         .query(`INSERT INTO FlashcardProgress (student_id, flashcard_id, times_seen, times_correct, times_incorrect, next_review)
-                VALUES (@studentId, @flashcardId, 1, ${correct ? 1 : 0}, ${correct ? 0 : 1}, DATEADD(DAY, 1, GETDATE()))`);
+                VALUES (@studentId, @flashcardId, 1, @timesCorrect, @timesIncorrect, DATEADD(DAY, 1, GETDATE()))`);
       
       progress = {
         times_seen: 0,
@@ -290,7 +295,7 @@ router.post('/:id/review', authenticate, async (req, res) => {
     // Update progress
     await pool.request()
       .input('studentId', sql.Int, req.userId)
-      .input('flashcardId', sql.Int, parseInt(id))
+      .input('flashcardId', sql.Int, flashcardId)
       .input('timesSeen', sql.Int, timesSeen)
       .input('timesCorrect', sql.Int, timesCorrect)
       .input('timesIncorrect', sql.Int, timesIncorrect)
@@ -308,8 +313,9 @@ router.post('/:id/review', authenticate, async (req, res) => {
 
     // Update KnowledgeProfile if card is linked to a concept
     const cardResult = await pool.request()
-      .input('id', sql.Int, parseInt(id))
-      .query('SELECT concept_id FROM Flashcards WHERE id = @id');
+      .input('id', sql.Int, flashcardId)
+      .input('studentId', sql.Int, req.userId)
+      .query('SELECT concept_id FROM Flashcards WHERE id = @id AND student_id = @studentId');
 
     if (cardResult.recordset.length > 0 && cardResult.recordset[0].concept_id) {
       const conceptId = cardResult.recordset[0].concept_id;
@@ -342,17 +348,25 @@ router.post('/:id/review', authenticate, async (req, res) => {
 // Update flashcard
 router.put('/:id', authenticate, async (req, res) => {
   try {
-    const { id } = req.params;
+    const flashcardId = parseId(req.params.id);
+    if (!flashcardId) return res.status(400).json({ error: 'Invalid flashcard ID' });
     const { front, back, difficulty, cardType } = req.body;
+
+    const safeFront = sanitizeString(front, 2000);
+    const safeBack = sanitizeString(back, 5000);
+    if (!safeFront || !safeBack) {
+      return res.status(400).json({ error: 'Front and back text are required' });
+    }
+
     const pool = await getPool();
 
     await pool.request()
-      .input('id', sql.Int, parseInt(id))
+      .input('id', sql.Int, flashcardId)
       .input('studentId', sql.Int, req.userId)
-      .input('front', sql.NVarChar, front)
-      .input('back', sql.NVarChar, back)
-      .input('difficulty', sql.Int, difficulty)
-      .input('cardType', sql.NVarChar, cardType)
+      .input('front', sql.NVarChar, safeFront)
+      .input('back', sql.NVarChar, safeBack)
+      .input('difficulty', sql.Int, clampInt(difficulty, 1, 5, 1))
+      .input('cardType', sql.NVarChar, cardType || 'qa')
       .query(`UPDATE Flashcards 
               SET front = @front, back = @back, difficulty = @difficulty, card_type = @cardType
               WHERE id = @id AND student_id = @studentId`);
@@ -367,18 +381,19 @@ router.put('/:id', authenticate, async (req, res) => {
 // Delete flashcard
 router.delete('/:id', authenticate, async (req, res) => {
   try {
-    const { id } = req.params;
+    const flashcardId = parseId(req.params.id);
+    if (!flashcardId) return res.status(400).json({ error: 'Invalid flashcard ID' });
     const pool = await getPool();
 
     // Delete progress first
     await pool.request()
-      .input('id', sql.Int, parseInt(id))
+      .input('id', sql.Int, flashcardId)
       .input('studentId', sql.Int, req.userId)
       .query('DELETE FROM FlashcardProgress WHERE flashcard_id = @id AND student_id = @studentId');
 
     // Delete card
     await pool.request()
-      .input('id', sql.Int, parseInt(id))
+      .input('id', sql.Int, flashcardId)
       .input('studentId', sql.Int, req.userId)
       .query('DELETE FROM Flashcards WHERE id = @id AND student_id = @studentId');
 

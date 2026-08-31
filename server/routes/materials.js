@@ -5,6 +5,7 @@ import mammoth from 'mammoth';
 import JSZip from 'jszip';
 import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
+import { parseId, sanitizeString, rateLimit } from '../utils/validate.js';
 
 const router = Router();
 const upload = multer({
@@ -135,9 +136,19 @@ router.post('/', authenticate, upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'Content is required' });
     }
 
+    // Validate and sanitize content length
+    if (materialContent.length > 500000) {
+      return res.status(400).json({ error: 'Content too large. Maximum is 500,000 characters.' });
+    }
+
+    // Sanitize title
+    const safeTitle = sanitizeString(title, 500);
+
     // If still no title, fallback to filename or generic
-    if (!title) {
+    if (!safeTitle) {
       title = req.file ? req.file.originalname.replace(/\.[^.]+$/, '') : 'Untitled Material';
+    } else {
+      title = safeTitle;
     }
 
     const pool = await getPool();
@@ -187,9 +198,11 @@ router.get('/', authenticate, async (req, res) => {
 // Get material details with concepts
 router.get('/:id', authenticate, async (req, res) => {
   try {
+    const matId = parseId(req.params.id);
+    if (!matId) return res.status(400).json({ error: 'Invalid material ID' });
     const pool = await getPool();
     const result = await pool.request()
-      .input('id', sql.Int, req.params.id)
+      .input('id', sql.Int, matId)
       .input('studentId', sql.Int, req.userId)
       .query('SELECT * FROM Materials WHERE id = @id AND student_id = @studentId');
 
@@ -199,9 +212,9 @@ router.get('/:id', authenticate, async (req, res) => {
 
     const material = result.recordset[0];
 
-    // Get associated concepts
+    // Get associated concepts (verified by material ownership above)
     const concepts = await pool.request()
-      .input('materialId', sql.Int, req.params.id)
+      .input('materialId', sql.Int, matId)
       .query('SELECT * FROM Concepts WHERE material_id = @materialId');
 
     material.concepts = concepts.recordset;
@@ -214,9 +227,11 @@ router.get('/:id', authenticate, async (req, res) => {
 // Delete material
 router.delete('/:id', authenticate, async (req, res) => {
   try {
+    const matId = parseId(req.params.id);
+    if (!matId) return res.status(400).json({ error: 'Invalid material ID' });
     const pool = await getPool();
     await pool.request()
-      .input('id', sql.Int, req.params.id)
+      .input('id', sql.Int, matId)
       .input('studentId', sql.Int, req.userId)
       .query('DELETE FROM Materials WHERE id = @id AND student_id = @studentId');
 

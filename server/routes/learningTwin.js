@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
-import { callAI, parseJSONArray } from '../utils/aiHelper.js';
+import { generateStructured } from '../services/aiService.js';
+import { patternDetection } from '../services/prompts.js';
+import { parseId, sanitizeString, rateLimit } from '../utils/validate.js';
 import 'dotenv/config';
 
 const router = Router();
@@ -222,15 +224,24 @@ router.get('/context', authenticate, async (req, res) => {
 
 // Record a misconception
 router.post('/misconceptions', authenticate, async (req, res) => {
-  try {
-    const { conceptId, topic, misconception, severity = 'medium' } = req.body;
-    const pool = await getPool();
+  try {      const { conceptId, topic, misconception, severity = 'medium' } = req.body;
 
-    // Check if this misconception already exists for this topic
-    const existing = await pool.request()
-      .input('studentId', sql.Int, req.userId)
-      .input('topic', sql.NVarChar, topic)
-      .input('misconception', sql.NVarChar, misconception)
+      // Validate inputs
+      const safeTopic = sanitizeString(topic, 300);
+      const safeMisconception = sanitizeString(misconception, 2000);
+      if (!safeTopic || !safeMisconception) {
+        return res.status(400).json({ error: 'topic and misconception are required' });
+      }
+      const safeConceptId = conceptId ? parseId(conceptId) : null;
+      const safeSeverity = ['low', 'medium', 'high'].includes(severity) ? severity : 'medium';
+
+      const pool = await getPool();
+
+      // Check if this misconception already exists for this topic (with student_id)
+      const existing = await pool.request()
+        .input('studentId', sql.Int, req.userId)
+        .input('topic', sql.NVarChar, safeTopic)
+        .input('misconception', sql.NVarChar, safeMisconception)
       .query(`
         SELECT id, occurrences FROM StudentMisconceptions
         WHERE student_id = @studentId AND topic = @topic AND misconception = @misconception AND resolved = 0
@@ -251,10 +262,10 @@ router.post('/misconceptions', authenticate, async (req, res) => {
       // Insert new misconception
       const result = await pool.request()
         .input('studentId', sql.Int, req.userId)
-        .input('conceptId', sql.Int, conceptId || null)
-        .input('topic', sql.NVarChar, topic)
-        .input('misconception', sql.NVarChar, misconception)
-        .input('severity', sql.NVarChar, severity)
+        .input('conceptId', sql.Int, safeConceptId)
+        .input('topic', sql.NVarChar, safeTopic)
+        .input('misconception', sql.NVarChar, safeMisconception)
+        .input('severity', sql.NVarChar, safeSeverity)
         .query(`
           INSERT INTO StudentMisconceptions (student_id, concept_id, topic, misconception, severity)
           OUTPUT INSERTED.id
@@ -271,10 +282,11 @@ router.post('/misconceptions', authenticate, async (req, res) => {
 // Resolve a misconception
 router.put('/misconceptions/:id/resolve', authenticate, async (req, res) => {
   try {
-    const { id } = req.params;
+    const miscId = parseId(req.params.id);
+    if (!miscId) return res.status(400).json({ error: 'Invalid misconception ID' });
     const pool = await getPool();
     await pool.request()
-      .input('id', sql.Int, parseInt(id))
+      .input('id', sql.Int, miscId)
       .input('studentId', sql.Int, req.userId)
       .query('UPDATE StudentMisconceptions SET resolved = 1, updated_at = GETDATE() WHERE id = @id AND student_id = @studentId');
     res.json({ success: true });
@@ -316,7 +328,7 @@ router.post('/detect-patterns', authenticate, async (req, res) => {
         .query(`
           SELECT TOP 10 e.percentage, ea.time_spent_seconds, eq.question_type
           FROM Exams e
-          JOIN ExamAnswers ea ON e.id = ea.exam_id
+          JOIN ExamAnswers ea ON e.id = ea.exam_id AND ea.student_id = @studentId
           JOIN ExamQuestions eq ON ea.question_id = eq.id
           WHERE e.student_id = @studentId AND e.status = 'completed'
         `),
@@ -333,38 +345,16 @@ router.post('/detect-patterns', authenticate, async (req, res) => {
     }
 
     // Use AI to detect patterns
-    const prompt = `Analyze this student's learning data and identify behavioral patterns.
-Only report patterns that are supported by clear evidence. Do NOT make psychological claims.
-
-Recent quiz answers (50 most recent):
-${JSON.stringify(data.recentAnswers.slice(0, 20), null, 2)}
-
-Flashcard performance:
-${JSON.stringify(data.flashcardPerformance.slice(0, 10), null, 2)}
-
-Exam performance:
-${JSON.stringify(data.examPerformance, null, 2)}
-
-Look for patterns like:
-- Performance difference between question types (MC vs short answer vs code)
-- Difficulty level performance trends
-- Topic-specific strengths/weaknesses
-- Hint dependency
-- Error patterns (e.g., multi-step reasoning errors)
-- Recognition vs recall abilities
-
-Return a JSON array of objects with:
-- "type" (category like "performance", "difficulty", "question_type", "topic_strength", "error_pattern")
-- "text" (clear, factual description of the pattern)
-- "confidence" (0.0-1.0 based on evidence strength)
-- "evidence" (brief explanation of what data supports this)
-
-Only include patterns where confidence >= 0.6.`;
+    const prompt = patternDetection({
+      recentAnswers: data.recentAnswers.slice(0, 20),
+      flashcardPerformance: data.flashcardPerformance.slice(0, 10),
+      examPerformance: data.examPerformance,
+    });
 
     let detectedPatterns = [];
     try {
-      const { text } = await callAI(prompt, { maxRetries: 1 });
-      detectedPatterns = parseJSONArray(text) || [];
+      const result = await generateStructured(prompt, { maxRetries: 1, fallbackData: [] });
+      detectedPatterns = result.data || [];
     } catch (aiErr) {
       console.error('AI pattern detection failed:', aiErr.detail || aiErr.message);
       return res.json({

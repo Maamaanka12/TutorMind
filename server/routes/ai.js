@@ -1,83 +1,30 @@
 import { Router } from 'express';
 import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
-import { callAI, parseJSONArray, parseJSONObject } from '../utils/aiHelper.js';
+import { generateStructured, buildLearningTwinContext } from '../services/aiService.js';
+import { conceptExtraction, questionGeneration, quizMisconception, adaptiveTutoringContext } from '../services/prompts.js';
+import { parseId, sanitizeString, requireFields, rateLimit } from '../utils/validate.js';
 import 'dotenv/config';
 
 const router = Router();
 
 // Helper: Get Learning Twin context for AI adaptation
 async function getLearningTwinContext(pool, studentId) {
-  const masteryResult = await pool.request()
-    .input('studentId', sql.Int, studentId)
-    .query(`
-      SELECT c.name, kp.mastery_level, kp.misconceptions
-      FROM KnowledgeProfile kp
-      JOIN Concepts c ON kp.concept_id = c.id
-      WHERE kp.student_id = @studentId
-    `);
-
-  const misconceptionsResult = await pool.request()
-    .input('studentId', sql.Int, studentId)
-    .query(`
-      SELECT topic, misconception, severity
-      FROM StudentMisconceptions
-      WHERE student_id = @studentId AND resolved = 0
-    `);
-
-  const patternsResult = await pool.request()
-    .input('studentId', sql.Int, studentId)
-    .query(`
-      SELECT pattern_text
-      FROM LearningPatterns
-      WHERE student_id = @studentId AND active = 1
-    `);
-
-  const topics = masteryResult.recordset.map(t =>
-    `${t.name}: ${Math.round(t.mastery_level * 100)}%${t.misconceptions ? ' (has misconceptions)' : ''}`
-  ).join(', ');
-
-  const misconceptions = misconceptionsResult.recordset.map(m =>
-    `${m.topic}: ${m.misconception} (severity: ${m.severity})`
-  ).join('; ');
-
-  const patterns = patternsResult.recordset.map(p => p.pattern_text).join('; ');
-
-  // Get Why Engine data for deeper misconception context
-  const whyEngineResult = await pool.request()
-    .input('studentId', sql.Int, studentId)
-    .query(`
-      SELECT TOP 5 topic, identified_misconception, confidence, explanation, steps_count, resolved
-      FROM WhyEngineSessions
-      WHERE student_id = @studentId
-      ORDER BY created_at DESC
-    `);
-
-  const whyEngineData = whyEngineResult.recordset.map(w =>
-    `${w.topic}: ${w.identified_misconception} (confidence: ${w.confidence}, status: ${w.resolved ? 'resolved' : 'in_progress'})`
-  ).join('; ');
-
-  const unresolvedMisconceptions = whyEngineResult.recordset.filter(w => !w.resolved);
-
-  return `Student learning profile:\n` +
-    `Topics: ${topics || 'No topics studied yet'}.\n` +
-    `Active misconceptions: ${misconceptions || 'None'}.\n` +
-    `Why Engine findings: ${whyEngineData || 'No investigations yet'}.\n` +
-    `Learning patterns: ${patterns || 'Not yet detected'}.\n` +
-    `\nAdapt your teaching based on this profile. If mastery is high, skip basics. ` +
-    `If misconceptions exist, address them. If patterns suggest example-based learning, use examples.\n` +
-    `${unresolvedMisconceptions.length > 0 ? `IMPORTANT: The student has ${unresolvedMisconceptions.length} unresolved misconception(s) detected by the Why Engine. When teaching related topics, proactively address these.` : ''}`;
+  const contextData = await buildLearningTwinContext(pool, studentId);
+  const prompt = adaptiveTutoringContext(contextData);
+  return prompt.system + '\n\n' + prompt.user;
 }
 
 // Analyze material and extract concepts
 router.post('/analyze', authenticate, async (req, res) => {
   try {
-    const { materialId } = req.body;
+    const matId = parseId(req.body.materialId);
+    if (!matId) return res.status(400).json({ error: 'Invalid materialId' });
     const pool = await getPool();
 
-    // Get material
+    // Get material (ownership verified via student_id)
     const matResult = await pool.request()
-      .input('id', sql.Int, materialId)
+      .input('id', sql.Int, matId)
       .input('studentId', sql.Int, req.userId)
       .query('SELECT content FROM Materials WHERE id = @id AND student_id = @studentId');
 
@@ -87,21 +34,13 @@ router.post('/analyze', authenticate, async (req, res) => {
 
     const content = matResult.recordset[0].content;
 
-    // Use AI to extract concepts
-    const prompt = `Analyze this educational material and extract the key concepts. 
-Return a JSON array of objects with "name" (concept name), "description" (brief explanation), 
-and "difficulty" (1-5 scale). Material:\n\n${content.substring(0, 8000)}`;
+    const prompt = conceptExtraction({ content });
+    const { data: concepts } = await generateStructured(prompt);
 
-    const { text } = await callAI(prompt);
-    const concepts = parseJSONArray(text);
-    if (!concepts) {
-      return res.status(502).json({ error: 'AI could not parse concepts. Please try again.', aiError: true, errorType: 'parse' });
-    }
-
-    // Save concepts to database
+    // Save concepts to database (linked to student's material)
     for (const concept of concepts) {
       await pool.request()
-        .input('materialId', sql.Int, materialId)
+        .input('materialId', sql.Int, matId)
         .input('name', sql.NVarChar, concept.name)
         .input('description', sql.NVarChar, concept.description)
         .input('difficulty', sql.Int, concept.difficulty || 1)
@@ -122,12 +61,16 @@ and "difficulty" (1-5 scale). Material:\n\n${content.substring(0, 8000)}`;
 // Generate diagnostic assessment questions
 router.post('/generate-questions', authenticate, async (req, res) => {
   try {
-    const { conceptId, count = 3 } = req.body;
+    const conceptId = parseId(req.body.conceptId);
+    if (!conceptId) return res.status(400).json({ error: 'Invalid conceptId' });
+    const count = parseInt(req.body.count, 10) || 3;
     const pool = await getPool();
 
+    // Verify concept belongs to a material owned by this student
     const conceptResult = await pool.request()
       .input('id', sql.Int, conceptId)
-      .query('SELECT * FROM Concepts WHERE id = @id');
+      .input('studentId', sql.Int, req.userId)
+      .query('SELECT c.* FROM Concepts c JOIN Materials m ON c.material_id = m.id WHERE c.id = @id AND m.student_id = @studentId');
 
     if (conceptResult.recordset.length === 0) {
       return res.status(404).json({ error: 'Concept not found' });
@@ -135,18 +78,14 @@ router.post('/generate-questions', authenticate, async (req, res) => {
 
     const concept = conceptResult.recordset[0];
 
-    const prompt = `Generate ${count} multiple-choice assessment questions for the concept: "${concept.name}".
-Description: ${concept.description}
-Difficulty level: ${concept.difficulty_level}/5
+    const prompt = questionGeneration({
+      conceptName: concept.name,
+      description: concept.description,
+      difficulty: concept.difficulty_level,
+      count,
+    });
 
-Return a JSON array with objects having: "question" (the question text), "options" (array of 4 choices), 
-"correctAnswer" (the correct option text), and "explanation" (why it's correct).`;
-
-    const { text } = await callAI(prompt);
-    const questions = parseJSONArray(text);
-    if (!questions) {
-      return res.status(502).json({ error: 'AI could not generate questions. Please try again.', aiError: true, errorType: 'parse' });
-    }
+    const { data: questions } = await generateStructured(prompt);
 
     // Save questions to database
     const savedQuestions = [];
@@ -180,13 +119,20 @@ Return a JSON array with objects having: "question" (the question text), "option
 // Detect misconception and provide adaptive explanation
 router.post('/evaluate', authenticate, async (req, res) => {
   try {
-    const { questionId, selectedAnswer } = req.body;
+    const questionId = parseId(req.body.questionId);
+    if (!questionId) return res.status(400).json({ error: 'Invalid questionId' });
+    const selectedAnswer = sanitizeString(req.body.selectedAnswer, 2000);
+    if (!selectedAnswer) return res.status(400).json({ error: 'selectedAnswer is required' });
     const pool = await getPool();
 
-    // Get question details
+    // Get question details (verify concept belongs to student's material)
     const qResult = await pool.request()
       .input('id', sql.Int, questionId)
-      .query('SELECT * FROM Questions WHERE id = @id');
+      .input('studentId', sql.Int, req.userId)
+      .query(`SELECT q.* FROM Questions q 
+              JOIN Concepts c ON q.concept_id = c.id 
+              JOIN Materials m ON c.material_id = m.id 
+              WHERE q.id = @id AND m.student_id = @studentId`);
 
     if (qResult.recordset.length === 0) {
       return res.status(404).json({ error: 'Question not found' });
@@ -212,22 +158,15 @@ router.post('/evaluate', authenticate, async (req, res) => {
 
     if (!isCorrect) {
       // Use AI to detect misconception
-      const prompt = `A student was asked this question and answered incorrectly.
-Question: ${question.question_text}
-Options: ${question.options}
-Student's answer: ${selectedAnswer}
-Correct answer: ${question.correct_answer}
-
-Analyze why the student got this wrong. Identify the likely misconception or knowledge gap.
-Then provide a clear, helpful explanation to correct their understanding.
-Generate a new practice question to verify their understanding.
-
-Return JSON with: "misconception" (what the student likely misunderstood),
-"explanation" (targeted explanation), and "followUpQuestion" (object with "question", "options", "correctAnswer").`;
+      const prompt = quizMisconception({
+        questionText: question.question_text,
+        options: question.options,
+        correctAnswer: question.correct_answer,
+        studentAnswer: selectedAnswer,
+      });
 
       try {
-        const { text } = await callAI(prompt);
-        const analysis = parseJSONObject(text);
+        const { data: analysis } = await generateStructured(prompt);
 
         if (analysis) {
           misconception = analysis.misconception;

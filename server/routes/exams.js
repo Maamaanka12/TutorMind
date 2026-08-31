@@ -1,7 +1,10 @@
 import { Router } from 'express';
 import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
-import { callAI, parseJSONArray } from '../utils/aiHelper.js';
+import { generateStructured } from '../services/aiService.js';
+import { examGeneration, examAnalysis } from '../services/prompts.js';
+import { parseJSONObject } from '../utils/aiHelper.js';
+import { parseId, clampInt, sanitizeString, rateLimit } from '../utils/validate.js';
 import 'dotenv/config';
 
 const router = Router();
@@ -10,20 +13,28 @@ const router = Router();
 router.post('/generate', authenticate, async (req, res) => {
   try {
     const { title, materialId, totalQuestions = 10, timeLimitMinutes = 30, difficulty = 'adaptive' } = req.body;
+
+    // Validate inputs
+    const matId = materialId ? parseId(materialId) : null;
+    const safeQuestions = clampInt(totalQuestions, 1, 50, 10);
+    const safeMinutes = clampInt(timeLimitMinutes, 5, 180, 30);
+    const safeDifficulty = clampInt(difficulty, 1, 5, undefined);
+    const safeTitle = sanitizeString(title, 500) || 'Exam';
+
     const pool = await getPool();
 
     // Get material content
     let materialContent = '';
     let materialTitle = title || 'Exam';
-    if (materialId) {
+    if (matId) {
       const matResult = await pool.request()
-        .input('id', sql.Int, materialId)
+        .input('id', sql.Int, matId)
         .input('studentId', sql.Int, req.userId)
         .query('SELECT content, title FROM Materials WHERE id = @id AND student_id = @studentId');
 
       if (matResult.recordset.length > 0) {
         materialContent = matResult.recordset[0].content;
-        materialTitle = title || matResult.recordset[0].title;
+        materialTitle = safeTitle || matResult.recordset[0].title;
       }
     }
 
@@ -38,42 +49,29 @@ router.post('/generate', authenticate, async (req, res) => {
         ORDER BY kp.mastery_level ASC
       `);
 
-    const weakAreasText = weakAreas.recordset.length > 0
-      ? `\nFocus extra questions on these weak areas: ${weakAreas.recordset.map(w => `${w.name} (mastery: ${Math.round(w.mastery_level * 100)}%)`).join(', ')}`
-      : '';
+    const weakAreaList = weakAreas.recordset.map(w => ({
+      name: w.name,
+      mastery: Math.round(w.mastery_level * 100),
+    }));
 
-    // AI generates the exam questions
-    const prompt = `Generate an exam with ${totalQuestions} questions from the following material.
-Mix of question types: multiple choice, true/false, short answer, and code/output questions where appropriate.
-Difficulty level: ${difficulty}${weakAreasText}
+    const prompt = examGeneration({
+      title: materialTitle,
+      content: materialContent,
+      totalQuestions: safeQuestions,
+      difficulty: safeDifficulty || 'adaptive',
+      weakAreas: weakAreaList.length > 0 ? weakAreaList : undefined,
+    });
 
-Material title: ${materialTitle}
-Material content:
-${materialContent.substring(0, 10000)}
-
-Return a JSON array of objects with:
-- "question" (the question text)
-- "type" (one of: "multiple_choice", "true_false", "short_answer", "code_output")
-- "options" (array of 4 choices for multiple_choice, ["True","False"] for true_false, empty array for others)
-- "correctAnswer" (the correct answer)
-- "conceptName" (related concept/topic name)
-
-Make questions genuinely useful for assessment. Cover different aspects of the material.`;
-
-    const { text } = await callAI(prompt);
-    const questions = parseJSONArray(text);
-    if (!questions) {
-      return res.status(502).json({ error: 'AI could not generate exam questions. Please try again.', aiError: true, errorType: 'parse' });
-    }
+    const { data: questions } = await generateStructured(prompt);
 
     // Create exam record
     const examResult = await pool.request()
       .input('studentId', sql.Int, req.userId)
       .input('title', sql.NVarChar, materialTitle)
-      .input('materialId', sql.Int, materialId || null)
+      .input('materialId', sql.Int, matId)
       .input('totalQuestions', sql.Int, questions.length)
-      .input('timeLimitMinutes', sql.Int, timeLimitMinutes)
-      .input('difficulty', sql.NVarChar, difficulty)
+      .input('timeLimitMinutes', sql.Int, safeMinutes)
+      .input('difficulty', sql.NVarChar, safeDifficulty || 'adaptive')
       .query(`INSERT INTO Exams (student_id, title, material_id, total_questions, time_limit_minutes, difficulty)
               OUTPUT INSERTED.id, INSERTED.started_at
               VALUES (@studentId, @title, @materialId, @totalQuestions, @timeLimitMinutes, @difficulty)`);
@@ -111,8 +109,8 @@ Make questions genuinely useful for assessment. Cover different aspects of the m
         id: exam.id,
         title: materialTitle,
         total_questions: savedQuestions.length,
-        time_limit_minutes: timeLimitMinutes,
-        difficulty,
+        time_limit_minutes: safeMinutes,
+        difficulty: safeDifficulty || 'adaptive',
         started_at: exam.started_at,
       },
       questions: savedQuestions,
@@ -132,8 +130,11 @@ router.get('/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const pool = await getPool();
 
+    const examId = parseId(id);
+    if (!examId) return res.status(400).json({ error: 'Invalid exam ID' });
+
     const examResult = await pool.request()
-      .input('id', sql.Int, parseInt(id))
+      .input('id', sql.Int, examId)
       .input('studentId', sql.Int, req.userId)
       .query('SELECT * FROM Exams WHERE id = @id AND student_id = @studentId');
 
@@ -145,13 +146,14 @@ router.get('/:id', authenticate, async (req, res) => {
 
     // Get questions (without correct answers for in-progress exams)
     const questionsResult = await pool.request()
-      .input('examId', sql.Int, parseInt(id))
+      .input('examId', sql.Int, examId)
       .query('SELECT id, question_number, question_text, question_type, options, concept_name FROM ExamQuestions WHERE exam_id = @examId ORDER BY question_number');
 
-    // Get any submitted answers
+    // Get submitted answers (filtered by student for defense-in-depth)
     const answersResult = await pool.request()
-      .input('examId', sql.Int, parseInt(id))
-      .query('SELECT * FROM ExamAnswers WHERE exam_id = @examId');
+      .input('examId', sql.Int, examId)
+      .input('studentId', sql.Int, req.userId)
+      .query('SELECT * FROM ExamAnswers WHERE exam_id = @examId AND student_id = @studentId');
 
     const answers = {};
     answersResult.recordset.forEach(a => {
@@ -176,13 +178,17 @@ router.get('/:id', authenticate, async (req, res) => {
 // Submit/answer a single question during exam
 router.post('/:id/answer', authenticate, async (req, res) => {
   try {
-    const { id } = req.params;
-    const { questionId, answer, timeSpentSeconds } = req.body;
+    const examId = parseId(req.params.id);
+    if (!examId) return res.status(400).json({ error: 'Invalid exam ID' });
+    const questionId = parseId(req.body.questionId);
+    if (!questionId) return res.status(400).json({ error: 'Invalid questionId' });
+    const answer = sanitizeString(req.body.answer, 2000);
+    const timeSpentSeconds = clampInt(req.body.timeSpentSeconds, 0, 7200, 0);
     const pool = await getPool();
 
     // Verify exam belongs to student and is in progress
     const examResult = await pool.request()
-      .input('id', sql.Int, parseInt(id))
+      .input('id', sql.Int, examId)
       .input('studentId', sql.Int, req.userId)
       .query('SELECT status FROM Exams WHERE id = @id AND student_id = @studentId');
 
@@ -196,16 +202,17 @@ router.post('/:id/answer', authenticate, async (req, res) => {
 
     // Upsert answer
     await pool.request()
-      .input('examId', sql.Int, parseInt(id))
+      .input('examId', sql.Int, examId)
+      .input('studentId', sql.Int, req.userId)
       .input('questionId', sql.Int, questionId)
       .input('answer', sql.NVarChar, answer)
-      .input('timeSpent', sql.Int, timeSpentSeconds || 0)
-      .query(`IF EXISTS (SELECT 1 FROM ExamAnswers WHERE exam_id = @examId AND question_id = @questionId)
+      .input('timeSpent', sql.Int, timeSpentSeconds)
+      .query(`IF EXISTS (SELECT 1 FROM ExamAnswers WHERE exam_id = @examId AND question_id = @questionId AND student_id = @studentId)
         UPDATE ExamAnswers SET student_answer = @answer, time_spent_seconds = @timeSpent, answered_at = GETDATE()
-        WHERE exam_id = @examId AND question_id = @questionId
+        WHERE exam_id = @examId AND question_id = @questionId AND student_id = @studentId
       ELSE
-        INSERT INTO ExamAnswers (exam_id, question_id, student_answer, time_spent_seconds)
-        VALUES (@examId, @questionId, @answer, @timeSpent)`);
+        INSERT INTO ExamAnswers (exam_id, student_id, question_id, student_answer, time_spent_seconds)
+        VALUES (@examId, @studentId, @questionId, @answer, @timeSpent)`);
 
     res.json({ success: true });
   } catch (err) {
@@ -217,12 +224,13 @@ router.post('/:id/answer', authenticate, async (req, res) => {
 // Submit entire exam for grading
 router.post('/:id/submit', authenticate, async (req, res) => {
   try {
-    const { id } = req.params;
+    const examId = parseId(req.params.id);
+    if (!examId) return res.status(400).json({ error: 'Invalid exam ID' });
     const pool = await getPool();
 
     // Get exam
     const examResult = await pool.request()
-      .input('id', sql.Int, parseInt(id))
+      .input('id', sql.Int, examId)
       .input('studentId', sql.Int, req.userId)
       .query('SELECT * FROM Exams WHERE id = @id AND student_id = @studentId');
 
@@ -237,13 +245,14 @@ router.post('/:id/submit', authenticate, async (req, res) => {
 
     // Get all questions with correct answers
     const questionsResult = await pool.request()
-      .input('examId', sql.Int, parseInt(id))
+      .input('examId', sql.Int, examId)
       .query('SELECT * FROM ExamQuestions WHERE exam_id = @examId');
 
-    // Get all student answers
+    // Get all student answers (filtered by student for defense-in-depth)
     const answersResult = await pool.request()
-      .input('examId', sql.Int, parseInt(id))
-      .query('SELECT * FROM ExamAnswers WHERE exam_id = @examId');
+      .input('examId', sql.Int, examId)
+      .input('studentId', sql.Int, req.userId)
+      .query('SELECT * FROM ExamAnswers WHERE exam_id = @examId AND student_id = @studentId');
 
     const answers = {};
     answersResult.recordset.forEach(a => {
@@ -272,11 +281,14 @@ router.post('/:id/submit', authenticate, async (req, res) => {
 
       if (isCorrect) score++;
 
-      // Update answer record with correctness
-      await pool.request()
-        .input('isCorrect', sql.Bit, isCorrect)
-        .input('answerId', sql.Int, answers[question.id]?.id)
-        .query('UPDATE ExamAnswers SET is_correct = @isCorrect WHERE id = @answerId');
+      // Update answer record with correctness (only if it belongs to this student)
+      if (answers[question.id]?.id) {
+        await pool.request()
+          .input('isCorrect', sql.Bit, isCorrect)
+          .input('answerId', sql.Int, answers[question.id].id)
+          .input('studentId', sql.Int, req.userId)
+          .query('UPDATE ExamAnswers SET is_correct = @isCorrect WHERE id = @answerId AND student_id = @studentId');
+      }
 
       // Track concept performance
       const concept = question.concept_name || 'General';
@@ -299,42 +311,34 @@ router.post('/:id/submit', authenticate, async (req, res) => {
       .map(([name, data]) => `${name} (${Math.round(data.correct / data.total * 100)}%)`)
       .join(', ') || 'None';
 
-    const analysisPrompt = `A student just completed an exam on "${exam.title}".
-Score: ${score}/${totalQuestions} (${percentage}%)
+    const fallbackAnalysis = {
+      strongAreas: Object.entries(conceptResults).filter(([, d]) => d.correct / d.total >= 0.7).map(([n]) => n),
+      weakAreas: Object.entries(conceptResults).filter(([, d]) => d.correct / d.total < 0.7).map(([n]) => n),
+      detectedIssues: [],
+      recommendations: ['Review the weak areas identified above.', 'Try flashcards for topics below 70% mastery.'],
+      aiUnavailable: true,
+    };
 
-Concept breakdown:
-${conceptBreakdown}
-
-Weak areas: ${weakConcepts}
-
-Provide a brief analysis including:
-1. Strong areas (concepts above 70%)
-2. Weak areas (concepts below 70%)
-3. Specific detected issues or misconceptions if apparent
-4. 2-3 targeted recommendations for what to study next
-
-Return JSON with: "strongAreas" (array of strings), "weakAreas" (array of strings), "detectedIssues" (array of strings), "recommendations" (array of strings).`;
-
-    let analysis = {};
+    let analysis = fallbackAnalysis;
     try {
-      const { text: aiText } = await callAI(analysisPrompt, { maxRetries: 1 });
-      const { parseJSONObject } = await import('../utils/aiHelper.js');
-      analysis = parseJSONObject(aiText) || {};
+      const analysisPrompt = examAnalysis({
+        title: exam.title,
+        score,
+        total: totalQuestions,
+        percentage,
+        conceptBreakdown,
+        weakConcepts,
+      });
+      const result = await generateStructured(analysisPrompt, { maxRetries: 1, fallbackData: fallbackAnalysis });
+      analysis = result.data;
     } catch (aiErr) {
       console.error('AI analysis failed:', aiErr.detail || aiErr.message);
-      // Graceful fallback: use basic analytics from grading data
-      analysis = {
-        strongAreas: Object.entries(conceptResults).filter(([, d]) => d.correct / d.total >= 0.7).map(([n]) => n),
-        weakAreas: Object.entries(conceptResults).filter(([, d]) => d.correct / d.total < 0.7).map(([n]) => n),
-        detectedIssues: [],
-        recommendations: ['Review the weak areas identified above.', 'Try flashcards for topics below 70% mastery.'],
-        aiUnavailable: true,
-      };
     }
 
-    // Update exam record
+    // Update exam record (with student_id ownership check)
     await pool.request()
-      .input('id', sql.Int, parseInt(id))
+      .input('id', sql.Int, examId)
+      .input('studentId', sql.Int, req.userId)
       .input('score', sql.Int, score)
       .input('totalScore', sql.Int, totalQuestions)
       .input('percentage', sql.Float, percentage)
@@ -342,29 +346,34 @@ Return JSON with: "strongAreas" (array of strings), "weakAreas" (array of string
       .query(`UPDATE Exams 
               SET status = 'completed', score = @score, total_score = @totalScore, 
                   percentage = @percentage, analysis = @analysis, submitted_at = GETDATE()
-              WHERE id = @id`);
+              WHERE id = @id AND student_id = @studentId`);
 
-    // Update KnowledgeProfile for each concept
+    // Update KnowledgeProfile for each concept (with ownership checks)
     for (const [conceptName, data] of Object.entries(conceptResults)) {
-      // Try to find concept by name from existing Concepts table
+      // Try to find concept by name from existing Concepts table (linked to student's material)
       const conceptResult = await pool.request()
         .input('name', sql.NVarChar, conceptName)
-        .query('SELECT id FROM Concepts WHERE name LIKE @name');
+        .input('studentId', sql.Int, req.userId)
+        .query(`SELECT c.id FROM Concepts c 
+                JOIN Materials m ON c.material_id = m.id 
+                WHERE c.name LIKE @name AND m.student_id = @studentId`);
 
       if (conceptResult.recordset.length > 0) {
         const conceptId = conceptResult.recordset[0].id;
         const masteryDelta = data.correct / data.total >= 0.7 ? 0.1 : -0.1;
+        const newMastery = data.correct / data.total;
 
         await pool.request()
           .input('studentId', sql.Int, req.userId)
           .input('conceptId', sql.Int, conceptId)
           .input('delta', sql.Float, masteryDelta)
+          .input('newMastery', sql.Float, newMastery)
           .query(`IF EXISTS (SELECT 1 FROM KnowledgeProfile WHERE student_id = @studentId AND concept_id = @conceptId)
             UPDATE KnowledgeProfile SET mastery_level = CASE WHEN mastery_level + @delta > 1 THEN 1 WHEN mastery_level + @delta < 0 THEN 0 ELSE mastery_level + @delta END, last_assessed = GETDATE(), updated_at = GETDATE()
             WHERE student_id = @studentId AND concept_id = @conceptId
           ELSE
             INSERT INTO KnowledgeProfile (student_id, concept_id, mastery_level, last_assessed)
-            VALUES (@studentId, @conceptId, ${data.correct / data.total}, GETDATE())`);
+            VALUES (@studentId, @conceptId, @newMastery, GETDATE())`);
       }
     }
 
