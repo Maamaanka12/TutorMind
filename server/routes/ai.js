@@ -44,12 +44,30 @@ async function getLearningTwinContext(pool, studentId) {
 
   const patterns = patternsResult.recordset.map(p => p.pattern_text).join('; ');
 
+  // Get Why Engine data for deeper misconception context
+  const whyEngineResult = await pool.request()
+    .input('studentId', sql.Int, studentId)
+    .query(`
+      SELECT TOP 5 topic, identified_misconception, confidence, explanation, steps_count, resolved
+      FROM WhyEngineSessions
+      WHERE student_id = @studentId
+      ORDER BY created_at DESC
+    `);
+
+  const whyEngineData = whyEngineResult.recordset.map(w =>
+    `${w.topic}: ${w.identified_misconception} (confidence: ${w.confidence}, status: ${w.resolved ? 'resolved' : 'in_progress'})`
+  ).join('; ');
+
+  const unresolvedMisconceptions = whyEngineResult.recordset.filter(w => !w.resolved);
+
   return `Student learning profile:\n` +
     `Topics: ${topics || 'No topics studied yet'}.\n` +
     `Active misconceptions: ${misconceptions || 'None'}.\n` +
+    `Why Engine findings: ${whyEngineData || 'No investigations yet'}.\n` +
     `Learning patterns: ${patterns || 'Not yet detected'}.\n` +
     `\nAdapt your teaching based on this profile. If mastery is high, skip basics. ` +
-    `If misconceptions exist, address them. If patterns suggest example-based learning, use examples.`;
+    `If misconceptions exist, address them. If patterns suggest example-based learning, use examples.\n` +
+    `${unresolvedMisconceptions.length > 0 ? `IMPORTANT: The student has ${unresolvedMisconceptions.length} unresolved misconception(s) detected by the Why Engine. When teaching related topics, proactively address these.` : ''}`;
 }
 
 // Analyze material and extract concepts
@@ -259,21 +277,50 @@ Return JSON with: "misconception" (what the student likely misunderstood),
             ORDER BY occurrences DESC
           `);
 
+        let whyEngineMisconceptionId = null;
         if (existingMisconception.recordset.length > 0) {
+          whyEngineMisconceptionId = existingMisconception.recordset[0].id;
           await pool.request()
             .input('id', sql.Int, existingMisconception.recordset[0].id)
             .query(`UPDATE StudentMisconceptions SET occurrences = occurrences + 1, last_detected = GETDATE(), updated_at = GETDATE() WHERE id = @id`);
         } else {
-          await pool.request()
+          const insertResult = await pool.request()
             .input('studentId', sql.Int, req.userId)
             .input('conceptId', sql.Int, question.concept_id)
             .input('topic', sql.NVarChar, conceptName)
             .input('misconception', sql.NVarChar, misconception)
             .query(`
               INSERT INTO StudentMisconceptions (student_id, concept_id, topic, misconception)
+              OUTPUT INSERTED.id
               VALUES (@studentId, @conceptId, @topic, @misconception)
             `);
+          whyEngineMisconceptionId = insertResult.recordset[0].id;
         }
+
+        // Create a Why Engine session for this investigation
+        const followUpObj = followUpQuestion || {};
+        await pool.request()
+          .input('studentId', sql.Int, req.userId)
+          .input('misconceptionId', sql.Int, whyEngineMisconceptionId)
+          .input('originalQuestion', sql.NVarChar, question.question_text)
+          .input('studentAnswer', sql.NVarChar, selectedAnswer)
+          .input('correctAnswer', sql.NVarChar, question.correct_answer)
+          .input('topic', sql.NVarChar, conceptName)
+          .input('identifiedMisconception', sql.NVarChar, misconception)
+          .input('confidence', sql.NVarChar, 'medium')
+          .input('explanation', sql.NVarChar, explanation)
+          .input('followUpQuestion', sql.NVarChar, followUpObj.question || null)
+          .input('followUpOptions', sql.NVarChar, followUpObj.options ? JSON.stringify(followUpObj.options) : null)
+          .input('followUpCorrectAnswer', sql.NVarChar, followUpObj.correctAnswer || null)
+          .query(`
+            INSERT INTO WhyEngineSessions 
+              (student_id, misconception_id, original_question, student_answer, correct_answer,
+               topic, identified_misconception, confidence, explanation,
+               follow_up_question, follow_up_options, follow_up_correct_answer)
+            VALUES (@studentId, @misconceptionId, @originalQuestion, @studentAnswer, @correctAnswer,
+                    @topic, @identifiedMisconception, @confidence, @explanation,
+                    @followUpQuestion, @followUpOptions, @followUpCorrectAnswer)
+          `);
       }
     } else {
       // Correct answer - increase mastery

@@ -1,7 +1,7 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../utils/auth';
 import { useTheme } from '../utils/ThemeContext';
-import { BookOpen, LogOut, User, Sparkles, Menu, X, Sun, Moon, Layers, Flame, Brain } from 'lucide-react';
+import { BookOpen, LogOut, User, Sparkles, Menu, X, Sun, Moon, Layers, Flame, Brain, Search } from 'lucide-react';
 import { useState } from 'react';
 
 export default function Navbar() {
@@ -69,6 +69,13 @@ export default function Navbar() {
               >
                 <Brain size={16} />
                 Learning Twin
+              </Link>
+              <Link
+                to="/why-engine"
+                className="px-4 py-2 rounded-clay font-semibold text-primary-700 dark:text-primary-300 hover:bg-primary-50 dark:hover:bg-primary-800 transition-colors duration-150 flex items-center gap-1"
+              >
+                <Search size={16} />
+                Why Engine
               </Link>
               <div className="flex items-center gap-2 px-3 py-2 bg-primary-100 dark:bg-primary-800 rounded-clay text-sm font-semibold text-primary-700 dark:text-primary-300 border border-primary-200 dark:border-primary-700">
                 <div className="bg-primary-200 dark:bg-primary-700 p-1 rounded-full">
@@ -171,6 +178,14 @@ export default function Navbar() {
               >
                 <Brain size={16} />
                 Learning Twin
+              </Link>
+              <Link
+                to="/why-engine"
+                onClick={() => setMobileOpen(false)}
+                className="block px-4 py-2 rounded-clay font-semibold text-primary-700 dark:text-primary-300 hover:bg-primary-50 dark:hover:bg-primary-800 flex items-center gap-2"
+              >
+                <Search size={16} />
+                Why Engine
               </Link>
               <button
                 onClick={handleLogout}

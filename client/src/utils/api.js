@@ -77,4 +77,12 @@ export const api = {
   recordMisconception: (body) => request('/learning-twin/misconceptions', { method: 'POST', body: JSON.stringify(body) }),
   resolveMisconception: (id) => request(`/learning-twin/misconceptions/${id}/resolve`, { method: 'PUT' }),
   detectPatterns: () => request('/learning-twin/detect-patterns', { method: 'POST' }),
+
+  // Why Engine
+  analyzeWrongAnswer: (body) => request('/why-engine/analyze', { method: 'POST', body: JSON.stringify(body) }),
+  resolveFollowUp: (body) => request('/why-engine/resolve', { method: 'POST', body: JSON.stringify(body) }),
+  freeFormAnalysis: (body) => request('/why-engine/free-form', { method: 'POST', body: JSON.stringify(body) }),
+  getWhyEngineHistory: (limit) => request(`/why-engine/history?limit=${limit || 20}`),
+  getWhyEngineStats: () => request('/why-engine/stats'),
+  getWhyEngineSession: (id) => request(`/why-engine/session/${id}`),
 };

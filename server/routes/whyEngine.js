@@ -1,0 +1,653 @@
+import { Router } from 'express';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import { getPool, sql } from '../db.js';
+import { authenticate } from '../middleware/auth.js';
+import 'dotenv/config';
+
+const router = Router();
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+// ============================================
+// POST /api/why-engine/analyze
+// Analyze a wrong answer: identify misconception, generate explanation + follow-up
+// ============================================
+router.post('/analyze', authenticate, async (req, res) => {
+  try {
+    const { questionId, studentAnswer, questionText, options, correctAnswer, conceptId } = req.body;
+    const pool = await getPool();
+    const studentId = req.userId;
+
+    // Validate required fields
+    if (!questionText || studentAnswer === undefined || !correctAnswer) {
+      return res.status(400).json({ error: 'questionText, studentAnswer, and correctAnswer are required' });
+    }
+
+    // Get existing misconceptions for this student (if any related)
+    let existingMisconceptions = [];
+    if (conceptId) {
+      const conceptResult = await pool.request()
+        .input('conceptId', sql.Int, conceptId)
+        .query('SELECT name FROM Concepts WHERE id = @conceptId');
+      
+      if (conceptResult.recordset.length > 0) {
+        const topic = conceptResult.recordset[0].name;
+        const miscResult = await pool.request()
+          .input('studentId', sql.Int, studentId)
+          .input('topic', sql.NVarChar, topic)
+          .query(`
+            SELECT misconception, severity, occurrences
+            FROM StudentMisconceptions
+            WHERE student_id = @studentId AND topic = @topic AND resolved = 0
+            ORDER BY occurrences DESC
+          `);
+        existingMisconceptions = miscResult.recordset;
+      }
+    }
+
+    // Get student's mastery level for context
+    let masteryContext = '';
+    if (conceptId) {
+      const masteryResult = await pool.request()
+        .input('studentId', sql.Int, studentId)
+        .input('conceptId', sql.Int, conceptId)
+        .query('SELECT mastery_level FROM KnowledgeProfile WHERE student_id = @studentId AND concept_id = @conceptId');
+      
+      if (masteryResult.recordset.length > 0) {
+        masteryContext = `Current mastery level: ${Math.round(masteryResult.recordset[0].mastery_level * 100)}%. `;
+      }
+    }
+
+    // Use AI to analyze the misconception
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const prompt = `You are the "Why Engine" of an adaptive learning system. Your job is to identify WHY a student got a question wrong — not just say "wrong answer."
+
+QUESTION: ${questionText}
+${options ? `OPTIONS: ${options}` : ''}
+CORRECT ANSWER: ${correctAnswer}
+STUDENT'S WRONG ANSWER: ${studentAnswer}
+
+${existingMisconceptions.length > 0 ? `KNOWN MISCONCEPTIONS for this topic:\n${existingMisconceptions.map(m => `- "${m.misconception}" (severity: ${m.severity}, seen ${m.occurrences} times)`).join('\n')}\n\nConsider whether the student's error is related to any known misconception.` : ''}
+
+${masteryContext}
+
+TASK:
+1. Identify the likely misconception or knowledge gap that led to this wrong answer.
+2. Estimate your confidence: "high" (clear evidence), "medium" (likely but not certain), or "low" (uncertain, need more info).
+   - Only use "high" confidence when reasoning was provided or the error is very specific.
+   - If you only have an answer and no reasoning, use "medium" or "low".
+3. Generate a clear, targeted explanation that corrects the misconception without being condescending.
+4. Generate a follow-up question that specifically tests whether the student now understands the corrected concept.
+
+Return JSON:
+{
+  "misconception": "what the student likely misunderstood or got wrong",
+  "confidence": "high" | "medium" | "low",
+  "explanation": "targeted explanation that addresses the misconception directly, use examples where helpful",
+  "followUpQuestion": "a question that tests the same concept the student got wrong",
+  "followUpOptions": ["option1", "option2", "option3", "option4"],
+  "followUpCorrectAnswer": "the correct option"
+}`;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+
+    if (!jsonMatch) {
+      return res.status(500).json({ error: 'AI could not generate analysis' });
+    }
+
+    const analysis = JSON.parse(jsonMatch[0]);
+
+    // Get concept name for topic
+    let topic = 'Unknown';
+    if (conceptId) {
+      const conceptResult = await pool.request()
+        .input('conceptId', sql.Int, conceptId)
+        .query('SELECT name FROM Concepts WHERE id = @conceptId');
+      if (conceptResult.recordset.length > 0) {
+        topic = conceptResult.recordset[0].name;
+      }
+    }
+
+    // Store/update misconception in StudentMisconceptions
+    let misconceptionId = null;
+    const existingMisc = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .input('topic', sql.NVarChar, topic)
+      .query(`
+        SELECT id, occurrences FROM StudentMisconceptions
+        WHERE student_id = @studentId AND topic = @topic AND resolved = 0
+        ORDER BY occurrences DESC
+      `);
+
+    if (existingMisc.recordset.length > 0) {
+      misconceptionId = existingMisc.recordset[0].id;
+      await pool.request()
+        .input('id', sql.Int, misconceptionId)
+        .query(`UPDATE StudentMisconceptions 
+                SET occurrences = occurrences + 1, last_detected = GETDATE(), updated_at = GETDATE() 
+                WHERE id = @id`);
+    } else {
+      const insertResult = await pool.request()
+        .input('studentId', sql.Int, studentId)
+        .input('conceptId', sql.Int, conceptId || null)
+        .input('topic', sql.NVarChar, topic)
+        .input('misconception', sql.NVarChar, analysis.misconception)
+        .input('severity', sql.NVarChar, analysis.confidence === 'high' ? 'high' : analysis.confidence === 'medium' ? 'medium' : 'low')
+        .query(`
+          INSERT INTO StudentMisconceptions (student_id, concept_id, topic, misconception, severity)
+          OUTPUT INSERTED.id
+          VALUES (@studentId, @conceptId, @topic, @misconception, @severity)
+        `);
+      misconceptionId = insertResult.recordset[0].id;
+    }
+
+    // Create a Why Engine session to track this investigation
+    const sessionResult = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .input('misconceptionId', sql.Int, misconceptionId)
+      .input('originalQuestion', sql.NVarChar, questionText)
+      .input('studentAnswer', sql.NVarChar, studentAnswer)
+      .input('correctAnswer', sql.NVarChar, correctAnswer)
+      .input('topic', sql.NVarChar, topic)
+      .input('identifiedMisconception', sql.NVarChar, analysis.misconception)
+      .input('confidence', sql.NVarChar, analysis.confidence)
+      .input('explanation', sql.NVarChar, analysis.explanation)
+      .input('followUpQuestion', sql.NVarChar, analysis.followUpQuestion)
+      .input('followUpOptions', sql.NVarChar, JSON.stringify(analysis.followUpOptions))
+      .input('followUpCorrectAnswer', sql.NVarChar, analysis.followUpCorrectAnswer)
+      .query(`
+        INSERT INTO WhyEngineSessions 
+          (student_id, misconception_id, original_question, student_answer, correct_answer,
+           topic, identified_misconception, confidence, explanation,
+           follow_up_question, follow_up_options, follow_up_correct_answer)
+        OUTPUT INSERTED.id
+        VALUES (@studentId, @misconceptionId, @originalQuestion, @studentAnswer, @correctAnswer,
+                @topic, @identifiedMisconception, @confidence, @explanation,
+                @followUpQuestion, @followUpOptions, @followUpCorrectAnswer)
+      `);
+
+    // Update KnowledgeProfile - reduce mastery
+    if (conceptId) {
+      await pool.request()
+        .input('studentId', sql.Int, studentId)
+        .input('conceptId', sql.Int, conceptId)
+        .input('misconception', sql.NVarChar, analysis.misconception)
+        .query(`
+          IF EXISTS (SELECT 1 FROM KnowledgeProfile WHERE student_id = @studentId AND concept_id = @conceptId)
+            UPDATE KnowledgeProfile SET mastery_level = CASE WHEN mastery_level - 0.1 < 0 THEN 0 ELSE mastery_level - 0.1 END, 
+              misconceptions = @misconception, updated_at = GETDATE()
+            WHERE student_id = @studentId AND concept_id = @conceptId
+          ELSE
+            INSERT INTO KnowledgeProfile (student_id, concept_id, mastery_level, misconceptions) 
+            VALUES (@studentId, @conceptId, 0.2, @misconception)
+        `);
+    }
+
+    res.json({
+      sessionId: sessionResult.recordset[0].id,
+      misconceptionId,
+      misconception: analysis.misconception,
+      confidence: analysis.confidence,
+      explanation: analysis.explanation,
+      followUpQuestion: analysis.followUpQuestion,
+      followUpOptions: analysis.followUpOptions,
+      followUpCorrectAnswer: analysis.followUpCorrectAnswer,
+      topic,
+    });
+  } catch (err) {
+    console.error('Why Engine analyze error:', err);
+    res.status(500).json({ error: 'Analysis failed' });
+  }
+});
+
+// ============================================
+// POST /api/why-engine/resolve
+// Evaluate follow-up answer — did the student resolve the misconception?
+// ============================================
+router.post('/resolve', authenticate, async (req, res) => {
+  try {
+    const { sessionId, followUpAnswer } = req.body;
+    const pool = await getPool();
+    const studentId = req.userId;
+
+    if (!sessionId || followUpAnswer === undefined) {
+      return res.status(400).json({ error: 'sessionId and followUpAnswer are required' });
+    }
+
+    // Get the session
+    const sessionResult = await pool.request()
+      .input('id', sql.Int, sessionId)
+      .input('studentId', sql.Int, studentId)
+      .query('SELECT * FROM WhyEngineSessions WHERE id = @id AND student_id = @studentId');
+
+    if (sessionResult.recordset.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const session = sessionResult.recordset[0];
+    const isCorrect = followUpAnswer === session.follow_up_correct_answer;
+
+    // Update the session with the follow-up answer
+    await pool.request()
+      .input('id', sql.Int, sessionId)
+      .input('followUpAnswer', sql.NVarChar, followUpAnswer)
+      .query(`
+        UPDATE WhyEngineSessions 
+        SET follow_up_student_answer = @followUpAnswer, updated_at = GETDATE()
+        WHERE id = @id
+      `);
+
+    let resolutionStatus;
+    let responseMessage;
+    let nextFollowUp = null;
+
+    if (isCorrect) {
+      // Student understood! Check if this is enough evidence to resolve
+      let totalSessions = 1;
+      if (session.misconception_id) {
+        const sessionCount = await pool.request()
+          .input('misconceptionId', sql.Int, session.misconception_id)
+          .query(`
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN resolved = 1 THEN 1 ELSE 0 END) as resolved_count
+            FROM WhyEngineSessions
+            WHERE misconception_id = @misconceptionId
+          `);
+        totalSessions = sessionCount.recordset[0].total;
+      }
+
+      // If this is the first follow-up or they've gotten it right before, mark as improving
+      if (totalSessions <= 1) {
+        resolutionStatus = 'improving';
+        responseMessage = `Great work! You answered correctly. Your understanding of this concept is improving. The Why Engine will continue to monitor this area.`;
+      } else {
+        // Multiple correct follow-ups — mark as resolved
+        resolutionStatus = 'resolved';
+        responseMessage = `Excellent! You've demonstrated understanding of this concept. The misconception appears to be resolved.`;
+
+        // Mark the misconception as resolved
+        if (session.misconception_id) {
+          await pool.request()
+            .input('id', sql.Int, session.misconception_id)
+            .query(`
+              UPDATE StudentMisconceptions 
+              SET resolved = 1, updated_at = GETDATE()
+              WHERE id = @id
+            `);
+        }
+
+        // Boost mastery
+        // Get concept_id from the misconception
+        if (session.misconception_id) {
+          const miscResult = await pool.request()
+            .input('id', sql.Int, session.misconception_id)
+            .query('SELECT concept_id FROM StudentMisconceptions WHERE id = @id');
+          
+          if (miscResult.recordset.length > 0 && miscResult.recordset[0].concept_id) {
+            await pool.request()
+              .input('studentId', sql.Int, studentId)
+              .input('conceptId', sql.Int, miscResult.recordset[0].concept_id)
+              .query(`
+                IF EXISTS (SELECT 1 FROM KnowledgeProfile WHERE student_id = @studentId AND concept_id = @conceptId)
+                  UPDATE KnowledgeProfile SET mastery_level = CASE WHEN mastery_level + 0.2 > 1 THEN 1 ELSE mastery_level + 0.2 END, 
+                    updated_at = GETDATE(), last_assessed = GETDATE()
+                  WHERE student_id = @studentId AND concept_id = @conceptId
+                ELSE
+                  INSERT INTO KnowledgeProfile (student_id, concept_id, mastery_level) 
+                  VALUES (@studentId, @conceptId, 0.5)
+              `);
+          }
+        }
+      }
+
+      // Update the session as resolved
+      await pool.request()
+        .input('id', sql.Int, sessionId)
+        .input('status', sql.NVarChar, resolutionStatus)
+        .query(`
+          UPDATE WhyEngineSessions 
+          SET resolved = 1, resolution_status = @status, updated_at = GETDATE()
+          WHERE id = @id
+        `);
+
+    } else {
+      // Still incorrect — increase severity, generate another follow-up
+      resolutionStatus = 'in_progress';
+
+      // Increase severity if repeated failures
+      if (session.misconception_id) {
+        await pool.request()
+          .input('id', sql.Int, session.misconception_id)
+          .query(`
+            UPDATE StudentMisconceptions 
+            SET occurrences = occurrences + 1, severity = 'high', last_detected = GETDATE(), updated_at = GETDATE()
+            WHERE id = @id
+          `);
+      }
+
+      // Generate another targeted follow-up
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+      const followUpPrompt = `The student still has a misconception after one remediation attempt.
+
+Original question: ${session.original_question}
+Student's original wrong answer: ${session.student_answer}
+Correct answer: ${session.correct_answer}
+Misconception identified: ${session.identified_misconception}
+Explanation already given: ${session.explanation}
+Student's follow-up answer: ${followUpAnswer} (also wrong)
+
+The student is struggling. Generate a SIMPLER or DIFFERENT approach to explain the concept.
+Use a concrete example, analogy, or step-by-step breakdown.
+
+Return JSON:
+{
+  "explanation": "new, simpler explanation using examples/analogies",
+  "followUpQuestion": "a simpler or differently-worded question to test understanding",
+  "followUpOptions": ["option1", "option2", "option3", "option4"],
+  "followUpCorrectAnswer": "the correct option"
+}`;
+
+      try {
+        const result = await model.generateContent(followUpPrompt);
+        const text = result.response.text();
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+
+        if (jsonMatch) {
+          const newFollowUp = JSON.parse(jsonMatch[0]);
+
+          // Update the session with the new follow-up
+          await pool.request()
+            .input('id', sql.Int, sessionId)
+            .input('explanation', sql.NVarChar, newFollowUp.explanation)
+            .input('followUpQuestion', sql.NVarChar, newFollowUp.followUpQuestion)
+            .input('followUpOptions', sql.NVarChar, JSON.stringify(newFollowUp.followUpOptions))
+            .input('followUpCorrectAnswer', sql.NVarChar, newFollowUp.followUpCorrectAnswer)
+            .query(`
+              UPDATE WhyEngineSessions 
+              SET explanation = @explanation, follow_up_question = @followUpQuestion,
+                  follow_up_options = @followUpOptions, follow_up_correct_answer = @followUpCorrectAnswer,
+                  follow_up_student_answer = NULL, steps_count = steps_count + 1, updated_at = GETDATE()
+              WHERE id = @id
+            `);
+
+          nextFollowUp = {
+            sessionId,
+            explanation: newFollowUp.explanation,
+            followUpQuestion: newFollowUp.followUpQuestion,
+            followUpOptions: newFollowUp.followUpOptions,
+            followUpCorrectAnswer: newFollowUp.followUpCorrectAnswer,
+          };
+        }
+      } catch (aiErr) {
+        console.error('Why Engine follow-up generation error:', aiErr);
+        // Continue without a new follow-up — the student still gets feedback
+      }
+
+      responseMessage = `The student is still struggling with this concept. The Why Engine is generating a different approach.`;
+    }
+
+    res.json({
+      sessionId,
+      isCorrect,
+      resolutionStatus,
+      responseMessage,
+      misconception: session.identified_misconception,
+      topic: session.topic,
+      nextFollowUp,
+    });
+  } catch (err) {
+    console.error('Why Engine resolve error:', err);
+    res.status(500).json({ error: 'Resolution check failed' });
+  }
+});
+
+// ============================================
+// GET /api/why-engine/history
+// Get the student's misconception investigation history
+// ============================================
+router.get('/history', authenticate, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const studentId = req.userId;
+    const limit = parseInt(req.query.limit) || 20;
+
+    const result = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .input('limit', sql.Int, limit)
+      .query(`
+        SELECT TOP (@limit)
+          w.id, w.original_question, w.student_answer, w.correct_answer,
+          w.topic, w.identified_misconception, w.confidence, w.explanation,
+          w.follow_up_student_answer, w.resolved, w.resolution_status,
+          w.steps_count, w.created_at, w.updated_at,
+          sm.severity, sm.occurrences as total_occurrences
+        FROM WhyEngineSessions w
+        LEFT JOIN StudentMisconceptions sm ON w.misconception_id = sm.id
+        WHERE w.student_id = @studentId
+        ORDER BY w.created_at DESC
+      `);
+
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('Why Engine history error:', err);
+    res.status(500).json({ error: 'Failed to fetch history' });
+  }
+});
+
+// ============================================
+// GET /api/why-engine/stats
+// Get statistics about the student's misconception resolution
+// ============================================
+router.get('/stats', authenticate, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const studentId = req.userId;
+
+    const statsResult = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query(`
+        SELECT 
+          COUNT(*) as total_investigations,
+          SUM(CASE WHEN resolved = 1 THEN 1 ELSE 0 END) as resolved,
+          SUM(CASE WHEN resolution_status = 'in_progress' THEN 1 ELSE 0 END) as in_progress,
+          SUM(CASE WHEN resolution_status = 'improving' THEN 1 ELSE 0 END) as improving,
+          ISNULL(AVG(steps_count), 0) as avg_steps,
+          SUM(CASE WHEN confidence = 'high' THEN 1 ELSE 0 END) as high_confidence
+        FROM WhyEngineSessions
+        WHERE student_id = @studentId
+      `);
+
+    const topicStats = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .query(`
+        SELECT topic, 
+               COUNT(*) as investigations,
+               SUM(CASE WHEN resolved = 1 THEN 1 ELSE 0 END) as resolved,
+               MAX(confidence) as highest_confidence
+        FROM WhyEngineSessions
+        WHERE student_id = @studentId
+        GROUP BY topic
+        ORDER BY COUNT(*) DESC
+      `);
+
+    res.json({
+      overall: statsResult.recordset[0],
+      byTopic: topicStats.recordset,
+    });
+  } catch (err) {
+    console.error('Why Engine stats error:', err);
+    res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
+// ============================================
+// GET /api/why-engine/session/:id
+// Get a specific investigation session with full details
+// ============================================
+router.get('/session/:id', authenticate, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const { id } = req.params;
+
+    const result = await pool.request()
+      .input('id', sql.Int, parseInt(id))
+      .input('studentId', sql.Int, req.userId)
+      .query(`
+        SELECT w.*, sm.severity, sm.occurrences as total_occurrences
+        FROM WhyEngineSessions w
+        LEFT JOIN StudentMisconceptions sm ON w.misconception_id = sm.id
+        WHERE w.id = @id AND w.student_id = @studentId
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    res.json(result.recordset[0]);
+  } catch (err) {
+    console.error('Why Engine session error:', err);
+    res.status(500).json({ error: 'Failed to fetch session' });
+  }
+});
+
+// ============================================
+// POST /api/why-engine/free-form
+// Analyze a free-form wrong answer (for AI chat integration)
+// ============================================
+router.post('/free-form', authenticate, async (req, res) => {
+  try {
+    const { questionText, studentAnswer, topic } = req.body;
+    const pool = await getPool();
+    const studentId = req.userId;
+
+    if (!questionText || !studentAnswer) {
+      return res.status(400).json({ error: 'questionText and studentAnswer are required' });
+    }
+
+    // Get existing misconceptions for context
+    let existingMisconceptions = [];
+    if (topic) {
+      const miscResult = await pool.request()
+        .input('studentId', sql.Int, studentId)
+        .input('topic', sql.NVarChar, topic)
+        .query(`
+          SELECT misconception, severity, occurrences
+          FROM StudentMisconceptions
+          WHERE student_id = @studentId AND topic = @topic AND resolved = 0
+        `);
+      existingMisconceptions = miscResult.recordset;
+    }
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const prompt = `You are the "Why Engine" of an adaptive learning system.
+
+A student was asked a question and gave an incorrect answer. Analyze why.
+
+QUESTION: ${questionText}
+STUDENT'S ANSWER: ${studentAnswer}
+${topic ? `TOPIC: ${topic}` : ''}
+
+${existingMisconceptions.length > 0 ? `KNOWN MISCONCEPTIONS:\n${existingMisconceptions.map(m => `- "${m.misconception}" (severity: ${m.severity})`).join('\n')}` : ''}
+
+Analyze the student's reasoning (if any can be inferred from the answer).
+If you only have the answer and no explanation of reasoning, classify confidence as "low" or "medium".
+Only claim "high" confidence when there's clear evidence of a specific misconception.
+
+Return JSON:
+{
+  "topic": "${topic || 'inferred topic'}",
+  "misconception": "what the student likely misunderstood",
+  "confidence": "high" | "medium" | "low",
+  "reasoningAnalysis": "what you can infer about the student's thought process, or 'No reasoning provided' if none",
+  "explanation": "targeted explanation to correct the misconception",
+  "followUpQuestion": "a question testing the corrected understanding",
+  "followUpOptions": ["option1", "option2", "option3", "option4"],
+  "followUpCorrectAnswer": "the correct option"
+}`;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+
+    if (!jsonMatch) {
+      return res.status(500).json({ error: 'AI could not generate analysis' });
+    }
+
+    const analysis = JSON.parse(jsonMatch[0]);
+    const resolvedTopic = topic || analysis.topic || 'Unknown';
+
+    // Store misconception
+    let misconceptionId = null;
+    const existingMisc = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .input('topic', sql.NVarChar, resolvedTopic)
+      .query(`
+        SELECT id FROM StudentMisconceptions
+        WHERE student_id = @studentId AND topic = @topic AND resolved = 0
+        ORDER BY occurrences DESC
+      `);
+
+    if (existingMisc.recordset.length > 0) {
+      misconceptionId = existingMisc.recordset[0].id;
+      await pool.request()
+        .input('id', sql.Int, misconceptionId)
+        .query(`UPDATE StudentMisconceptions SET occurrences = occurrences + 1, last_detected = GETDATE(), updated_at = GETDATE() WHERE id = @id`);
+    } else {
+      const insertResult = await pool.request()
+        .input('studentId', sql.Int, studentId)
+        .input('topic', sql.NVarChar, resolvedTopic)
+        .input('misconception', sql.NVarChar, analysis.misconception)
+        .input('severity', sql.NVarChar, analysis.confidence === 'high' ? 'high' : 'medium')
+        .query(`
+          INSERT INTO StudentMisconceptions (student_id, topic, misconception, severity)
+          OUTPUT INSERTED.id
+          VALUES (@studentId, @topic, @misconception, @severity)
+        `);
+      misconceptionId = insertResult.recordset[0].id;
+    }
+
+    // Create session
+    const sessionResult = await pool.request()
+      .input('studentId', sql.Int, studentId)
+      .input('misconceptionId', sql.Int, misconceptionId)
+      .input('originalQuestion', sql.NVarChar, questionText)
+      .input('studentAnswer', sql.NVarChar, studentAnswer)
+      .input('correctAnswer', sql.NVarChar, 'Pending review')
+      .input('topic', sql.NVarChar, resolvedTopic)
+      .input('identifiedMisconception', sql.NVarChar, analysis.misconception)
+      .input('confidence', sql.NVarChar, analysis.confidence)
+      .input('explanation', sql.NVarChar, analysis.explanation)
+      .input('followUpQuestion', sql.NVarChar, analysis.followUpQuestion)
+      .input('followUpOptions', sql.NVarChar, JSON.stringify(analysis.followUpOptions))
+      .input('followUpCorrectAnswer', sql.NVarChar, analysis.followUpCorrectAnswer)
+      .query(`
+        INSERT INTO WhyEngineSessions 
+          (student_id, misconception_id, original_question, student_answer, correct_answer,
+           topic, identified_misconception, confidence, explanation,
+           follow_up_question, follow_up_options, follow_up_correct_answer)
+        OUTPUT INSERTED.id
+        VALUES (@studentId, @misconceptionId, @originalQuestion, @studentAnswer, @correctAnswer,
+                @topic, @identifiedMisconception, @confidence, @explanation,
+                @followUpQuestion, @followUpOptions, @followUpCorrectAnswer)
+      `);
+
+    res.json({
+      sessionId: sessionResult.recordset[0].id,
+      misconceptionId,
+      topic: resolvedTopic,
+      misconception: analysis.misconception,
+      confidence: analysis.confidence,
+      reasoningAnalysis: analysis.reasoningAnalysis,
+      explanation: analysis.explanation,
+      followUpQuestion: analysis.followUpQuestion,
+      followUpOptions: analysis.followUpOptions,
+      followUpCorrectAnswer: analysis.followUpCorrectAnswer,
+    });
+  } catch (err) {
+    console.error('Why Engine free-form error:', err);
+    res.status(500).json({ error: 'Analysis failed' });
+  }
+});
+
+export default router;
