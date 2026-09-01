@@ -147,14 +147,22 @@ Return a JSON object with:
 }
 
 // ─── 7. QUIZ MISCONCEPTION DETECTION (Evaluate endpoint) ─────
-export function quizMisconception({ questionText, options, correctAnswer, studentAnswer }) {
+export function quizMisconception({ questionText, options, correctAnswer, studentAnswer, studentContext }) {
+  const contextBlock = studentContext
+    ? `
+STUDENT LEARNING PROFILE:
+${studentContext}
+
+Use this context to personalize your explanation. If the student has misconceptions on this topic, address them directly. If they have high mastery, provide a concise explanation. If low mastery, use simpler language and examples.`
+    : '';
+
   return {
-    system: 'You are an expert tutor analyzing why a student answered incorrectly. Identify the misconception, explain it, and generate a follow-up question. Return ONLY a JSON object.',
+    system: 'You are an expert tutor analyzing why a student answered incorrectly. Identify the misconception, explain it, and generate a follow-up question. Use the student\'s learning profile to personalize your response. Return ONLY a JSON object.',
     user: `A student was asked this question and answered incorrectly.
 Question: ${questionText}
 Options: ${options}
 Student's answer: ${studentAnswer}
-Correct answer: ${correctAnswer}
+Correct answer: ${correctAnswer}${contextBlock}
 
 Analyze why the student got this wrong and return a JSON object with:
 - "misconception": what the student misunderstood (string)

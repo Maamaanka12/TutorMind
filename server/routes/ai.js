@@ -157,12 +157,34 @@ router.post('/evaluate', authenticate, async (req, res) => {
     let followUpQuestion = null;
 
     if (!isCorrect) {
+      // Build learning context for adaptive AI tutoring
+      let studentContext = null;
+      try {
+        const contextData = await buildLearningTwinContext(pool, req.userId);
+        const { topics, misconceptions, patterns, unresolvedMisconceptions } = contextData;
+        const topicStr = topics?.length
+          ? topics.map(t => `${t.name}: ${Math.round(t.mastery_level * 100)}%${t.misconceptions ? ' (has misconceptions)' : ''}`).join(', ')
+          : 'No topics studied yet';
+        const miscStr = misconceptions?.length
+          ? misconceptions.map(m => `${m.topic}: ${m.misconception} (severity: ${m.severity})`).join('; ')
+          : 'None';
+        const patternStr = patterns?.length
+          ? patterns.map(p => p.pattern_text).join('; ')
+          : 'Not yet detected';
+        studentContext = `Topics mastery: ${topicStr}.
+Active misconceptions: ${miscStr}.
+Learning patterns: ${patternStr}.${unresolvedMisconceptions?.length > 0 ? ` The student has ${unresolvedMisconceptions.length} unresolved misconception(s).` : ''}`;
+      } catch (ctxErr) {
+        console.warn('Could not build learning context for evaluate:', ctxErr.message);
+      }
+
       // Use AI to detect misconception
       const prompt = quizMisconception({
         questionText: question.question_text,
         options: question.options,
         correctAnswer: question.correct_answer,
         studentAnswer: selectedAnswer,
+        studentContext,
       });
 
       try {

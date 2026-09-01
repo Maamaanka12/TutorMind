@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '../utils/api';
-import { BookOpen, Brain, Loader2, ChevronRight, ArrowLeft, Sparkles } from 'lucide-react';
+import { BookOpen, Brain, Loader2, ChevronRight, ArrowLeft, Sparkles, Target, AlertTriangle, TrendingUp, BarChart3 } from 'lucide-react';
 
 export default function LearningSession() {
   const { materialId } = useParams();
@@ -11,6 +11,9 @@ export default function LearningSession() {
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [toast, setToast] = useState('');
+  const [learningProfile, setLearningProfile] = useState([]);
+  const [misconceptions, setMisconceptions] = useState([]);
+  const [learningContext, setLearningContext] = useState(null);
 
   function showToast(message) {
     setToast(message);
@@ -25,11 +28,50 @@ export default function LearningSession() {
     try {
       const data = await api.getMaterial(materialId);
       setMaterial(data);
-      setConcepts(data.concepts || []);
+      const materialConcepts = data.concepts || [];
+      setConcepts(materialConcepts);
+
+      // Fetch learning twin context for this material's concepts
+      fetchLearningContext(materialConcepts);
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function fetchLearningContext(materialConcepts) {
+    try {
+      // Fetch knowledge profile and misconceptions in parallel
+      const [profileData, misconceptionsData, contextData] = await Promise.allSettled([
+        api.getProfile(),
+        api.getMisconceptions(),
+        api.getLearningContext(),
+      ]);
+
+      // Filter profile to only concepts in this material
+      if (profileData.status === 'fulfilled' && materialConcepts.length > 0) {
+        const materialConceptIds = materialConcepts.map(c => c.id);
+        const relevant = profileData.value.filter(p => materialConceptIds.includes(p.concept_id));
+        setLearningProfile(relevant);
+      }
+
+      // Filter misconceptions to only concepts in this material
+      if (misconceptionsData.status === 'fulfilled' && materialConcepts.length > 0) {
+        const materialConceptNames = materialConcepts.map(c => c.name.toLowerCase());
+        const relevantMisconceptions = misconceptionsData.value.filter(m =>
+          materialConceptNames.includes((m.concept_name || '').toLowerCase())
+        );
+        setMisconceptions(relevantMisconceptions);
+      }
+
+      // Store the full learning context string for display
+      if (contextData.status === 'fulfilled' && contextData.value?.context) {
+        setLearningContext(contextData.value.context);
+      }
+    } catch (err) {
+      // Graceful failure — learning context is supplementary
+      console.warn('Could not load learning context:', err.message);
     }
   }
 
@@ -105,6 +147,88 @@ export default function LearningSession() {
           {material.content}
         </div>
       </div>
+
+      {/* Learning Profile — Learning Twin context for this material */}
+      {(learningProfile.length > 0 || misconceptions.length > 0) && (
+        <div className="clay-card p-6 md:p-8 mb-8 animate-slide-up" style={{ animationDelay: '150ms' }}>
+          <h2 className="font-display font-bold text-lg text-primary-900 dark:text-primary-100 mb-5 flex items-center gap-2">
+            <div className="bg-emerald-100 dark:bg-emerald-900/40 p-2 rounded-clay-sm">
+              <BarChart3 size={18} className="text-emerald-600 dark:text-emerald-400" />
+            </div>
+            Your Learning State
+            <span className="text-xs font-semibold text-primary-400 dark:text-primary-500 ml-auto">powered by Learning Twin</span>
+          </h2>
+
+          {/* Mastery per concept */}
+          {learningProfile.length > 0 && (
+            <div className="mb-5">
+              <h3 className="text-sm font-bold text-primary-600 dark:text-primary-400 mb-3 flex items-center gap-1.5">
+                <Target size={14} />
+                Concept Mastery
+              </h3>
+              <div className="space-y-3">
+                {learningProfile.map((p) => {
+                  const pct = Math.round((p.mastery_level || 0) * 100);
+                  const color = pct >= 70 ? 'bg-green-500 dark:bg-green-400' : pct >= 40 ? 'bg-yellow-500 dark:bg-yellow-400' : 'bg-red-400 dark:bg-red-500';
+                  const label = pct >= 70 ? 'Strong' : pct >= 40 ? 'Developing' : 'Needs Focus';
+                  const labelColor = pct >= 70 ? 'text-green-600 dark:text-green-400' : pct >= 40 ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-500 dark:text-red-400';
+                  return (
+                    <div key={p.concept_id}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-semibold text-primary-800 dark:text-primary-200">{p.concept_name}</span>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs font-bold ${labelColor}`}>{label}</span>
+                          <span className="text-xs font-bold text-primary-500 dark:text-primary-400" style={{ fontVariantNumeric: 'tabular-nums' }}>{pct}%</span>
+                        </div>
+                      </div>
+                      <div className="w-full bg-primary-100 dark:bg-primary-800 rounded-full h-2.5 border border-primary-200 dark:border-primary-700">
+                        <div
+                          className={`${color} h-2.5 rounded-full transition-all duration-700`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      {p.misconceptions && (
+                        <p className="text-xs text-red-400 dark:text-red-500 mt-1 font-semibold">⚠ Has recorded misconception</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Active misconceptions for this material */}
+          {misconceptions.length > 0 && (
+            <div>
+              <h3 className="text-sm font-bold text-primary-600 dark:text-primary-400 mb-3 flex items-center gap-1.5">
+                <AlertTriangle size={14} />
+                Active Misconceptions ({misconceptions.length})
+              </h3>
+              <div className="space-y-2">
+                {misconceptions.slice(0, 5).map((m) => (
+                  <div
+                    key={m.id}
+                    className="bg-red-50/60 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-clay p-3"
+                  >
+                    <p className="text-sm font-bold text-red-700 dark:text-red-400">{m.concept_name}</p>
+                    <p className="text-xs text-red-500 dark:text-red-400 mt-1 leading-relaxed">{m.misconception}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Adaptive tutoring note */}
+          {learningContext && (
+            <div className="mt-4 bg-emerald-50/50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-clay p-3">
+              <p className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1.5">
+                <TrendingUp size={12} />
+                The AI tutor is adapting to your learning profile for this material.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Concepts */}
       <div className="clay-card p-6 md:p-8 animate-slide-up" style={{ animationDelay: '200ms' }}>
