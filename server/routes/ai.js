@@ -3,6 +3,7 @@ import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { generateStructured, buildLearningTwinContext } from '../services/aiService.js';
 import { conceptExtraction, questionGeneration, quizMisconception, adaptiveTutoringContext } from '../services/prompts.js';
+import { logLearningEvent } from '../services/learningEvents.js';
 import { parseId, sanitizeString, requireFields, rateLimit } from '../utils/validate.js';
 import 'dotenv/config';
 
@@ -151,6 +152,24 @@ router.post('/evaluate', authenticate, async (req, res) => {
               OUTPUT INSERTED.id
               VALUES (@studentId, @questionId, @selectedAnswer, @isCorrect)`);
     const answerId = answerResult.recordset[0].id;
+
+    // Log granular learning event for the Learning Twin
+    const conceptNameResult = await pool.request()
+      .input('conceptId', sql.Int, question.concept_id)
+      .query('SELECT name FROM Concepts WHERE id = @conceptId');
+    const conceptName = conceptNameResult.recordset.length > 0 ? conceptNameResult.recordset[0].name : null;
+    try {
+      await logLearningEvent(pool, req.userId, {
+        eventType: 'question_answered',
+        conceptName,
+        isCorrect,
+        difficulty: question.difficulty_level,
+        timeSpentSeconds: req.body.timeSpentSeconds,
+        metadata: { questionId, answerId },
+      });
+    } catch (eventErr) {
+      console.warn('Could not log learning event:', eventErr.message);
+    }
 
     let misconception = null;
     let explanation = null;

@@ -3,6 +3,7 @@ import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { generateStructured } from '../services/aiService.js';
 import { flashcardGeneration } from '../services/prompts.js';
+import { logLearningEvent } from '../services/learningEvents.js';
 import { parseId, clampInt, sanitizeString, requireFields, rateLimit } from '../utils/validate.js';
 import 'dotenv/config';
 
@@ -311,15 +312,39 @@ router.post('/:id/review', authenticate, async (req, res) => {
         WHERE student_id = @studentId AND flashcard_id = @flashcardId
       `);
 
-    // ─── LEARNING LOOP: Update KnowledgeProfile mastery ───
+    // ─── LEARNING LOOP: Log learning event + update KnowledgeProfile mastery ───
     const cardResult = await pool.request()
       .input('id', sql.Int, flashcardId)
       .input('studentId', sql.Int, req.userId)
-      .query('SELECT concept_id FROM Flashcards WHERE id = @id AND student_id = @studentId');
+      .query('SELECT concept_id, difficulty FROM Flashcards WHERE id = @id AND student_id = @studentId');
 
-    if (cardResult.recordset.length > 0 && cardResult.recordset[0].concept_id) {
-      const conceptId = cardResult.recordset[0].concept_id;
-      const masteryDelta = correct ? 0.05 : -0.03;
+    if (cardResult.recordset.length > 0) {
+      const card = cardResult.recordset[0];
+      const conceptId = card.concept_id || null;
+
+      // Log granular learning event for the Learning Twin
+      let conceptName = null;
+      if (conceptId) {
+        const conceptRow = await pool.request()
+          .input('conceptId', sql.Int, conceptId)
+          .query('SELECT name FROM Concepts WHERE id = @conceptId');
+        conceptName = conceptRow.recordset.length > 0 ? conceptRow.recordset[0].name : null;
+      }
+
+      try {
+        await logLearningEvent(pool, req.userId, {
+          eventType: 'flashcard_reviewed',
+          conceptName,
+          isCorrect: correct,
+          difficulty: card.difficulty,
+          metadata: { flashcardId, timesSeen },
+        });
+      } catch (eventErr) {
+        console.warn('Could not log learning event:', eventErr.message);
+      }
+
+      if (conceptId) {
+        const masteryDelta = correct ? 0.05 : -0.03;
       
       await pool.request()
         .input('studentId', sql.Int, req.userId)
@@ -361,6 +386,7 @@ router.post('/:id/review', authenticate, async (req, res) => {
               VALUES (@studentId, @conceptId, @topic, @misconception, @severity)
             `);
         }
+      }
       }
     }
 

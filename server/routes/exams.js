@@ -3,6 +3,7 @@ import { getPool, sql } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { generateStructured } from '../services/aiService.js';
 import { examGeneration, examAnalysis, misconceptionDetection } from '../services/prompts.js';
+import { logLearningEvent } from '../services/learningEvents.js';
 import { parseJSONObject } from '../utils/aiHelper.js';
 import { parseId, clampInt, sanitizeString, rateLimit } from '../utils/validate.js';
 import 'dotenv/config';
@@ -293,6 +294,20 @@ router.post('/:id/submit', authenticate, async (req, res) => {
           .query('UPDATE ExamAnswers SET is_correct = @isCorrect WHERE id = @answerId AND student_id = @studentId');
       }
 
+      // Log granular learning event for the Learning Twin
+      try {
+        await logLearningEvent(pool, req.userId, {
+          eventType: 'exam_question_answered',
+          conceptName: question.concept_name || null,
+          topic: exam.title,
+          isCorrect,
+          timeSpentSeconds: answers[question.id]?.time_spent_seconds || null,
+          metadata: { examId, questionId: question.id, questionNumber: question.question_number },
+        });
+      } catch (eventErr) {
+        console.warn('Could not log learning event:', eventErr.message);
+      }
+
       // Track concept performance
       const concept = question.concept_name || 'General';
       if (!conceptResults[concept]) {
@@ -350,6 +365,17 @@ router.post('/:id/submit', authenticate, async (req, res) => {
               SET status = 'completed', score = @score, total_score = @totalScore, 
                   percentage = @percentage, analysis = @analysis, submitted_at = GETDATE()
               WHERE id = @id AND student_id = @studentId`);
+
+    // Log exam completion event for the Learning Twin
+    try {
+      await logLearningEvent(pool, req.userId, {
+        eventType: 'exam_submitted',
+        topic: exam.title,
+        metadata: { examId, score, total: totalQuestions, percentage },
+      });
+    } catch (eventErr) {
+      console.warn('Could not log learning event:', eventErr.message);
+    }
 
     // Update KnowledgeProfile for each concept (with ownership checks)
     for (const [conceptName, data] of Object.entries(conceptResults)) {

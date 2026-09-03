@@ -8,6 +8,7 @@ import aiRoutes from './routes/ai.js';
 import flashcardsRoutes from './routes/flashcards.js';
 import examsRoutes from './routes/exams.js';
 import learningTwinRoutes from './routes/learningTwin.js';
+import learningEventsRoutes from './routes/learningEvents.js';
 import whyEngineRoutes from './routes/whyEngine.js';
 
 const app = express();
@@ -24,6 +25,7 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/flashcards', flashcardsRoutes);
 app.use('/api/exams', examsRoutes);
 app.use('/api/learning-twin', learningTwinRoutes);
+app.use('/api/learning-events', learningEventsRoutes);
 app.use('/api/why-engine', whyEngineRoutes);
 
 // Health check

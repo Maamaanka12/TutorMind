@@ -88,6 +88,13 @@ export const api = {
   // Flashcard session tracking
   completeFlashcardSession: (body) => request('/flashcards/session-complete', { method: 'POST', body: JSON.stringify(body) }),
 
+  // Learning Events
+  recordLearningEvent: (body) => request('/learning-events', { method: 'POST', body: JSON.stringify(body) }),
+  getLearningEvents: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/learning-events${query ? `?${query}` : ''}`);
+  },
+
   // Why Engine
   analyzeWrongAnswer: (body) => request('/why-engine/analyze', { method: 'POST', body: JSON.stringify(body) }),
   resolveFollowUp: (body) => request('/why-engine/resolve', { method: 'POST', body: JSON.stringify(body) }),
